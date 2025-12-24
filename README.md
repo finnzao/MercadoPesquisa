@@ -3,58 +3,6 @@
 Sistema de coleta e comparação de preços para compras online em supermercados 
 e atacados com e-commerce próprio.
 
-## Mercados Suportados (MVP - Salvador/BA)
-
-| Mercado | Método | Status |
-|---------|--------|--------|
-| Carrefour Mercado | Playwright | 🔄 Em desenvolvimento |
-| Atacadão | Playwright | 🔄 Em desenvolvimento |
-| Pão de Açúcar | Playwright | 🔄 Em desenvolvimento |
-| Extra Mercado | Playwright | 🔄 Em desenvolvimento |
-
-## Instalação
-```bash
-# Clonar repositório
-git clone <repo-url>
-cd price-collector
-
-# Criar ambiente virtual
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# ou .venv\Scripts\activate  # Windows
-
-# Instalar dependências
-pip install -e ".[dev]"
-
-# Instalar browsers do Playwright
-playwright install chromium
-```
-
-## Uso
-```bash
-# Buscar produto em todos os mercados
-price-collector search "arroz tipo 1 5kg"
-
-# Buscar com CEP específico
-price-collector search "leite integral 1L" --cep 40000000
-
-# Buscar em mercado específico
-price-collector search "banana prata" --market carrefour
-
-# Exportar resultados
-price-collector search "café 500g" --output results.csv
-```
-
-## Arquitetura
-```
-src/
-├── core/           # Modelos, configurações, exceções
-├── scrapers/       # Scrapers por mercado (plugins)
-├── pipeline/       # Parsing, normalização, cálculo
-├── storage/        # Persistência (SQLite, CSV, Parquet)
-├── utils/          # Utilitários compartilhados
-└── cli.py          # Interface de linha de comando
-```
 
 ## Licença
 
@@ -110,15 +58,6 @@ MIT License
 
 ---
 
-## Resumo do Diretório `src/pipeline/`
-
-| Arquivo | Responsabilidade |
-|---------|------------------|
-| `__init__.py` | Exporta componentes do pipeline |
-| `parser.py` | `ProductParser`: converte strings de preço para Decimal |
-| `normalizer.py` | `QuantityNormalizer`: extrai quantidade e converte para unidade base |
-| `price_calculator.py` | `PriceCalculator`: calcula R$/kg, R$/L, R$/un |
-| `pipeline.py` | `ProcessingPipeline`: orquestra todo o fluxo |
 
 ---
 
@@ -283,7 +222,6 @@ MIT License
 
 ---
 
-## Resumo da PARTE 7
 
 | Arquivo | Responsabilidade |
 |---------|------------------|
