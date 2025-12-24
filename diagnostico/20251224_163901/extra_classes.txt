@@ -1,0 +1,7 @@
+header
+topHeader
+content
+mainContent
+text
+barraBusca
+busca

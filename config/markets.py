@@ -1,6 +1,6 @@
 """
-Configurações CORRIGIDAS dos mercados.
-URLs e seletores atualizados para dezembro de 2024.
+Configurações dos mercados com URLs CORRETAS.
+Atualizado em 24/12/2024 com URLs reais testadas.
 
 SUBSTITUA o conteúdo de config/markets.py por este arquivo.
 """
@@ -12,8 +12,8 @@ from typing import Optional
 
 class ScrapingMethod(str, Enum):
     """Método de scraping a ser utilizado."""
-    REQUESTS = "requests"      # requests + BeautifulSoup (sites estáticos)
-    PLAYWRIGHT = "playwright"  # Playwright (sites com JavaScript)
+    REQUESTS = "requests"
+    PLAYWRIGHT = "playwright"
 
 
 class MarketStatus(str, Enum):
@@ -28,10 +28,7 @@ class MarketStatus(str, Enum):
 class MarketSelectors:
     """Seletores CSS/XPath para extração de dados."""
     
-    # Container de produtos
     product_container: str
-    
-    # Dados do produto
     product_title: str
     product_price: str
     product_price_cents: Optional[str] = None
@@ -39,12 +36,8 @@ class MarketSelectors:
     product_image: Optional[str] = None
     product_link: Optional[str] = None
     product_availability: Optional[str] = None
-    
-    # Paginação
     next_page: Optional[str] = None
     total_results: Optional[str] = None
-    
-    # CEP
     cep_input: Optional[str] = None
     cep_submit: Optional[str] = None
     cep_confirm: Optional[str] = None
@@ -54,162 +47,151 @@ class MarketSelectors:
 class MarketConfig:
     """Configuração completa de um mercado."""
     
-    # Identificação
     id: str
     name: str
     display_name: str
-    
-    # URLs
     base_url: str
     search_url: str
-    
-    # Scraping
     method: ScrapingMethod
     status: MarketStatus
     selectors: MarketSelectors
-    
-    # Rate limiting
     requests_per_minute: int = 10
-    
-    # Headers customizados
     custom_headers: dict = field(default_factory=dict)
-    
-    # Configurações específicas
     requires_cep: bool = False
     has_api: bool = False
     api_url: Optional[str] = None
-    
-    # Região padrão (Salvador/BA)
     default_region: str = "Salvador - BA"
     default_cep: str = "40000000"
     
-    def get_search_url(self, query: str, page: int = 1) -> str:
+    def get_search_url(self, query: str, page: int = 0) -> str:
         """Monta a URL de busca com a query."""
         return self.search_url.format(query=query, page=page)
 
 
 # =============================================================================
-# CONFIGURAÇÕES DOS MERCADOS - CORRIGIDAS DEZEMBRO 2024
+# CONFIGURAÇÕES DOS MERCADOS - URLs CORRETAS 24/12/2024
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# CARREFOUR MERCADO - USA SUBDOMÍNIO SEPARADO
-# URL de busca: https://mercado.carrefour.com.br/s?q=TERMO&sort=score_desc&page=0
+# CARREFOUR MERCADO
+# URL real: https://mercado.carrefour.com.br/busca/TERMO
+# Exemplo: https://mercado.carrefour.com.br/busca/leite%20em%20p%C3%B3
 # -----------------------------------------------------------------------------
 CARREFOUR_CONFIG = MarketConfig(
     id="carrefour",
     name="carrefour",
     display_name="Carrefour Mercado",
     base_url="https://mercado.carrefour.com.br",
-    search_url="https://mercado.carrefour.com.br/s?q={query}&sort=score_desc&page={page}",
+    # URL CORRETA - usa /busca/TERMO (não query string)
+    search_url="https://mercado.carrefour.com.br/busca/{query}",
     method=ScrapingMethod.PLAYWRIGHT,
     status=MarketStatus.DEVELOPMENT,
-    requests_per_minute=6,  # Mais conservador
+    requests_per_minute=6,
     requires_cep=False,
     selectors=MarketSelectors(
-        # Seletores VTEX (plataforma usada pelo Carrefour)
-        product_container="div[data-testid='product-summary'], article[class*='product'], div[class*='vtex-product-summary']",
-        product_title="span[class*='productName'], h3[class*='product'], a[class*='product'] span",
+        product_container="div[data-testid='product-summary'], article[class*='product'], div[class*='vtex-product-summary'], div[class*='product-card']",
+        product_title="span[class*='productName'], h3[class*='product'], a[class*='product'] span, span[class*='name']",
         product_price="span[class*='price'], span[class*='sellingPrice'], div[class*='price'] span",
-        product_price_cents="span[class*='cents']",
-        product_unit_price="span[class*='unitPrice'], div[class*='unitprice']",
-        product_link="a[class*='product'], a[href*='/p']",
-        product_image="img[class*='product'], img[src*='vtexassets']",
+        product_price_cents="span[class*='cents'], span[class*='decimal']",
+        product_unit_price="span[class*='unitPrice'], div[class*='unitprice'], span[class*='perUnit']",
+        product_link="a[class*='product'], a[href*='/p'], a[href*='/produto']",
+        product_image="img[class*='product'], img[src*='vtexassets'], img[src*='carrefour']",
         product_availability="span[class*='availability'], div[class*='stock']",
-        next_page="button[class*='next'], a[class*='next']",
+        next_page="button[class*='next'], a[class*='next'], button[aria-label*='próx']",
         cep_input="input[placeholder*='CEP'], input[id*='cep']",
         cep_submit="button[class*='cep'], button[type='submit']",
     ),
 )
 
 # -----------------------------------------------------------------------------
-# ATACADÃO - USA /catalogo PARA LISTAGEM
-# URL: https://www.atacadao.com.br/catalogo?q=TERMO
-# Nota: O Atacadão tem e-commerce limitado, funciona mais como catálogo
+# ATACADÃO
+# URL real: https://www.atacadao.com.br/s?q=TERMO&sort=score_desc&page=0
+# Exemplo: https://www.atacadao.com.br/s?q=leite+em+p%C3%B3&sort=score_desc&page=0
 # -----------------------------------------------------------------------------
 ATACADAO_CONFIG = MarketConfig(
     id="atacadao",
     name="atacadao",
     display_name="Atacadão",
     base_url="https://www.atacadao.com.br",
-    search_url="https://www.atacadao.com.br/catalogo?q={query}&page={page}",
+    # URL CORRETA - usa /s?q=TERMO&sort=score_desc&page=N
+    search_url="https://www.atacadao.com.br/s?q={query}&sort=score_desc&page={page}",
     method=ScrapingMethod.PLAYWRIGHT,
     status=MarketStatus.DEVELOPMENT,
     requests_per_minute=6,
-    requires_cep=True,  # Atacadão exige CEP para ver preços
+    requires_cep=True,
     selectors=MarketSelectors(
-        # Seletores baseados em VTEX/Next.js
-        product_container="div[class*='product-card'], article[class*='product'], a[class*='product-summary']",
-        product_title="h3[class*='product'], span[class*='productName'], p[class*='product-name']",
-        product_price="span[class*='price'], p[class*='price'], div[class*='price']",
+        product_container="div[class*='product-card'], article[class*='product'], a[class*='product-summary'], div[class*='productCard']",
+        product_title="h3[class*='product'], span[class*='productName'], p[class*='product-name'], h2[class*='name']",
+        product_price="span[class*='price'], p[class*='price'], div[class*='price'], span[class*='sellingPrice']",
         product_price_cents="span[class*='decimal'], span[class*='cents']",
-        product_unit_price="span[class*='unit'], small[class*='unit']",
-        product_link="a[href*='/p/'], a[class*='product-link']",
-        product_image="img[class*='product'], img[src*='vtexassets']",
+        product_unit_price="span[class*='unit'], small[class*='unit'], span[class*='perUnit']",
+        product_link="a[href*='/p/'], a[class*='product-link'], a[href*='/produto']",
+        product_image="img[class*='product'], img[src*='vtexassets'], img[src*='atacadao']",
         product_availability="span[class*='stock'], div[class*='availability']",
-        next_page="button[class*='next'], a[aria-label*='próx']",
+        next_page="button[class*='next'], a[aria-label*='próx'], button[aria-label*='Next']",
         cep_input="input[placeholder*='CEP'], input[name*='cep']",
-        cep_submit="button[class*='cep-button']",
+        cep_submit="button[class*='cep-button'], button[class*='location']",
     ),
 )
 
 # -----------------------------------------------------------------------------
-# PÃO DE AÇÚCAR - GPA
-# URL: https://www.paodeacucar.com/busca?q=TERMO
+# PÃO DE AÇÚCAR
+# URL real: https://www.paodeacucar.com/busca?terms=TERMO
+# Exemplo: https://www.paodeacucar.com/busca?terms=leite%20em%20p%C3%B3
 # -----------------------------------------------------------------------------
 PAO_ACUCAR_CONFIG = MarketConfig(
     id="pao_acucar",
     name="pao_acucar",
     display_name="Pão de Açúcar",
     base_url="https://www.paodeacucar.com",
-    search_url="https://www.paodeacucar.com/busca?q={query}&page={page}",
+    # URL CORRETA - usa /busca?terms=TERMO (não q=)
+    search_url="https://www.paodeacucar.com/busca?terms={query}",
     method=ScrapingMethod.PLAYWRIGHT,
     status=MarketStatus.DEVELOPMENT,
     requests_per_minute=6,
     requires_cep=False,
     selectors=MarketSelectors(
-        # GPA usa React/Next.js
-        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product']",
-        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name']",
-        product_price="span[class*='price'], p[class*='price-value']",
-        product_price_cents="span[class*='cents']",
-        product_unit_price="span[class*='unit-price'], small[class*='price-per']",
-        product_link="a[class*='product'], a[href*='/produto/']",
-        product_image="img[class*='product'], img[loading='lazy']",
+        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product'], div[class*='ProductCard']",
+        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name'], p[class*='title']",
+        product_price="span[class*='price'], p[class*='price-value'], div[class*='price'], span[class*='value']",
+        product_price_cents="span[class*='cents'], span[class*='decimal']",
+        product_unit_price="span[class*='unit-price'], small[class*='price-per'], span[class*='perUnit']",
+        product_link="a[class*='product'], a[href*='/produto/'], a[href*='/p/']",
+        product_image="img[class*='product'], img[loading='lazy'], img[src*='paodeacucar']",
         product_availability="span[class*='stock'], div[class*='availability']",
-        next_page="button[class*='next'], button[aria-label*='próxima']",
+        next_page="button[class*='next'], button[aria-label*='próxima'], a[class*='pagination-next']",
         cep_input="input[placeholder*='CEP']",
-        cep_submit="button[class*='location']",
+        cep_submit="button[class*='location'], button[class*='cep']",
     ),
 )
 
 # -----------------------------------------------------------------------------
-# EXTRA - GPA (mesma plataforma do Pão de Açúcar)
-# URL: https://www.extra.com.br/busca?q=TERMO
+# EXTRA - Mesmo formato do Pão de Açúcar (mesma empresa GPA)
+# URL provável: https://www.extra.com.br/busca?terms=TERMO
 # -----------------------------------------------------------------------------
 EXTRA_CONFIG = MarketConfig(
     id="extra",
     name="extra",
     display_name="Extra Mercado",
     base_url="https://www.extra.com.br",
-    search_url="https://www.extra.com.br/busca?q={query}&page={page}",
+    # Usando mesmo formato do Pão de Açúcar (GPA)
+    search_url="https://www.extra.com.br/busca?terms={query}",
     method=ScrapingMethod.PLAYWRIGHT,
     status=MarketStatus.DEVELOPMENT,
     requests_per_minute=6,
     requires_cep=False,
     selectors=MarketSelectors(
-        # Mesma estrutura GPA
-        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product']",
-        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name']",
-        product_price="span[class*='price'], p[class*='price-value']",
-        product_price_cents="span[class*='cents']",
-        product_unit_price="span[class*='unit-price'], small[class*='price-per']",
-        product_link="a[class*='product'], a[href*='/produto/']",
-        product_image="img[class*='product'], img[loading='lazy']",
+        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product'], div[class*='ProductCard']",
+        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name'], p[class*='title']",
+        product_price="span[class*='price'], p[class*='price-value'], div[class*='price'], span[class*='value']",
+        product_price_cents="span[class*='cents'], span[class*='decimal']",
+        product_unit_price="span[class*='unit-price'], small[class*='price-per'], span[class*='perUnit']",
+        product_link="a[class*='product'], a[href*='/produto/'], a[href*='/p/']",
+        product_image="img[class*='product'], img[loading='lazy'], img[src*='extra']",
         product_availability="span[class*='stock'], div[class*='availability']",
-        next_page="button[class*='next'], button[aria-label*='próxima']",
+        next_page="button[class*='next'], button[aria-label*='próxima'], a[class*='pagination-next']",
         cep_input="input[placeholder*='CEP']",
-        cep_submit="button[class*='location']",
+        cep_submit="button[class*='location'], button[class*='cep']",
     ),
 )
 

@@ -1,0 +1,78 @@
+======================================================================
+📊 RELATÓRIO DE DIAGNÓSTICO
+======================================================================
+Data: 2025-12-24 16:39:52
+Termo testado: 'arroz 5kg'
+
+----------------------------------------------------------------------
+RESUMO
+----------------------------------------------------------------------
+🚫 Carrefour Mercado: BLOCKED
+   Motivo: Cloudflare proteção
+   Produtos: 10
+   HTTP: 200
+🚫 Atacadão: BLOCKED
+   Motivo: Verificação de robô
+   Produtos: 20
+   HTTP: 200
+🚫 Pão de Açúcar: BLOCKED
+   Motivo: CAPTCHA detectado
+   Produtos: 1
+   HTTP: 200
+❌ Extra: HTTP_ERROR
+   HTTP: 404
+
+----------------------------------------------------------------------
+DETALHES POR MERCADO
+----------------------------------------------------------------------
+
+### Carrefour Mercado (carrefour) ###
+Status: blocked
+URL: https://mercado.carrefour.com.br/busca/arroz%205kg
+HTTP Status: 200
+Bloqueado: Sim - Cloudflare proteção
+Produtos encontrados: 10
+Screenshots: carrefour_01_home.png, carrefour_02_search.png
+HTML: carrefour_page.html
+
+### Atacadão (atacadao) ###
+Status: blocked
+URL: https://www.atacadao.com.br/s?q=arroz%205kg&sort=score_desc&page=0
+HTTP Status: 200
+Bloqueado: Sim - Verificação de robô
+Produtos encontrados: 20
+Screenshots: atacadao_01_home.png, atacadao_02_search.png
+HTML: atacadao_page.html
+
+### Pão de Açúcar (pao_acucar) ###
+Status: blocked
+URL: https://www.paodeacucar.com/busca?terms=arroz%205kg
+HTTP Status: 200
+Bloqueado: Sim - CAPTCHA detectado
+Produtos encontrados: 1
+Screenshots: pao_acucar_01_home.png, pao_acucar_02_search.png
+HTML: pao_acucar_page.html
+
+### Extra (extra) ###
+Status: http_error
+URL: https://www.extra.com.br/busca?terms=arroz%205kg
+HTTP Status: 404
+Bloqueado: Não
+Produtos encontrados: 0
+Screenshots: extra_01_home.png, extra_02_search.png
+HTML: extra_page.html
+
+----------------------------------------------------------------------
+PRÓXIMOS PASSOS
+----------------------------------------------------------------------
+
+1. Abra os screenshots para ver o que aparece na tela
+2. Abra os arquivos HTML no browser para analisar a estrutura
+3. Use os arquivos *_classes.txt para identificar seletores corretos
+
+Se todos estão BLOCKED:
+- Os sites estão usando proteção anti-bot
+- Pode ser necessário usar proxy rotativo
+- Ou acessar via API oficial (se disponível)
+
+----------------------------------------------------------------------
