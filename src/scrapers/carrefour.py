@@ -1,11 +1,13 @@
 """
 Scraper específico para Carrefour Mercado.
-https://www.carrefour.com.br
+https://mercado.carrefour.com.br
+
+ATUALIZADO: 24/12/2024 - Seletores corrigidos baseados no HTML real.
 """
 
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 from playwright.async_api import Page
 
@@ -17,7 +19,12 @@ from src.scrapers.base import BaseScraper
 class CarrefourScraper(BaseScraper):
     """
     Scraper para Carrefour Mercado.
-    Usa Playwright devido ao carregamento dinâmico via JavaScript.
+    
+    Estrutura do site (24/12/2024):
+    - Container: <a data-testid="search-product-card" href="/produto/p">
+    - Título: <h2 class="text-sm...">Nome do Produto</h2>
+    - Preço: <span class="text-blue-royal font-bold...">R$ 19,79</span>
+    - Imagem: <img src="..." alt="...">
     """
     
     def __init__(self, config=None):
@@ -43,14 +50,19 @@ class CarrefourScraper(BaseScraper):
         """
         products = []
         
-        # Encontra todos os cards de produto
+        # Scroll para carregar lazy loading
+        await self._scroll_to_load(page)
+        
+        # Seletor principal: cards de produto
+        # O Carrefour usa <a data-testid="search-product-card"> como container
         product_cards = await page.query_selector_all(
-            self.selectors.product_container
+            'a[data-testid="search-product-card"]'
         )
         
-        self.logger.debug(
+        self.logger.info(
             "Cards encontrados",
             count=len(product_cards),
+            market="carrefour",
         )
         
         for card in product_cards:
@@ -72,6 +84,12 @@ class CarrefourScraper(BaseScraper):
         
         return products
     
+    async def _scroll_to_load(self, page: Page) -> None:
+        """Scroll para carregar produtos lazy-loaded."""
+        for _ in range(5):
+            await page.evaluate("window.scrollBy(0, 600)")
+            await page.wait_for_timeout(300)
+    
     async def _extract_single_product(
         self,
         card,
@@ -82,76 +100,132 @@ class CarrefourScraper(BaseScraper):
         """
         Extrai dados de um único card de produto.
         
-        Args:
-            card: Elemento do card
-            page: Página do Playwright
-            search_query: Termo buscado
-            cep: CEP configurado
-            
-        Returns:
-            RawProduct ou None se falhar
+        Estrutura do card:
+        <a data-testid="search-product-card" href="/produto-nome/p">
+            <div>
+                <img src="..." alt="Nome do Produto">
+            </div>
+            <div>
+                <h2>Nome do Produto</h2>
+                <span class="text-blue-royal font-bold">R$ 19,79</span>
+            </div>
+        </a>
         """
-        # Título (obrigatório)
-        title = await self._safe_get_text(
-            card,
-            self.selectors.product_title,
-        )
+        # =====================================================================
+        # TÍTULO
+        # =====================================================================
+        # Tenta h2 primeiro (é o seletor principal)
+        title = None
+        
+        # Método 1: h2 dentro do card
+        h2 = await card.query_selector("h2")
+        if h2:
+            title = await h2.inner_text()
+        
+        # Método 2: alt da imagem (fallback)
         if not title:
+            img = await card.query_selector("img")
+            if img:
+                title = await img.get_attribute("alt")
+        
+        if not title or not title.strip():
             return None
         
-        # Preço (obrigatório)
-        price_int = await self._safe_get_text(
-            card,
-            self.selectors.product_price,
-        )
-        price_cents = await self._safe_get_text(
-            card,
-            self.selectors.product_price_cents,
-        )
+        title = title.strip()
         
-        if not price_int:
+        # =====================================================================
+        # PREÇO
+        # =====================================================================
+        price_raw = None
+        
+        # Método 1: span com classes específicas do Carrefour
+        price_selectors = [
+            "span.text-blue-royal.font-bold",
+            "span[class*='text-blue-royal'][class*='font-bold']",
+            "span[class*='text-lg']",
+        ]
+        
+        for selector in price_selectors:
+            try:
+                price_el = await card.query_selector(selector)
+                if price_el:
+                    text = await price_el.inner_text()
+                    if text and "R$" in text:
+                        price_raw = text.strip()
+                        break
+            except:
+                continue
+        
+        # Método 2: busca qualquer span com R$
+        if not price_raw:
+            spans = await card.query_selector_all("span")
+            for span in spans:
+                try:
+                    text = await span.inner_text()
+                    if text and "R$" in text and any(c.isdigit() for c in text):
+                        price_raw = text.strip()
+                        break
+                except:
+                    continue
+        
+        if not price_raw:
             return None
         
-        # Monta preço completo
-        price_raw = price_int
-        if price_cents:
-            price_raw = f"{price_int},{price_cents}"
+        # =====================================================================
+        # URL DO PRODUTO
+        # =====================================================================
+        # O próprio card é um <a>, então pegamos o href dele
+        product_href = await card.get_attribute("href")
         
-        # Preço por unidade (opcional - alguns sites já fornecem)
-        unit_price_raw = await self._safe_get_text(
-            card,
-            self.selectors.product_unit_price,
-        )
+        if product_href:
+            # Se começa com /, é relativo
+            if product_href.startswith("/"):
+                product_url = urljoin(self.config.base_url, product_href)
+            else:
+                product_url = product_href
+        else:
+            product_url = page.url
         
-        # URL do produto
-        product_link = await self._safe_get_attribute(
-            card,
-            self.selectors.product_link,
-            "href",
-        )
-        product_url = urljoin(self.config.base_url, product_link) if product_link else page.url
+        # =====================================================================
+        # IMAGEM
+        # =====================================================================
+        image_url = None
+        img = await card.query_selector("img")
+        if img:
+            image_url = await img.get_attribute("src")
         
-        # Imagem
-        image_url = await self._safe_get_attribute(
-            card,
-            self.selectors.product_image,
-            "src",
-        )
+        # =====================================================================
+        # PREÇO POR UNIDADE (opcional)
+        # =====================================================================
+        unit_price_raw = None
+        # Carrefour às vezes mostra preço por kg/L em um elemento separado
+        unit_selectors = [
+            "p[class*='text-gray-medium']",
+            "span[class*='text-xs']",
+        ]
         
-        # Disponibilidade
-        availability_raw = await self._safe_get_text(
-            card,
-            self.selectors.product_availability,
-        )
+        for selector in unit_selectors:
+            try:
+                unit_el = await card.query_selector(selector)
+                if unit_el:
+                    text = await unit_el.inner_text()
+                    if text and ("/" in text or "por" in text.lower()):
+                        unit_price_raw = text.strip()
+                        break
+            except:
+                continue
         
+        # =====================================================================
+        # CRIAR PRODUTO
+        # =====================================================================
         return RawProduct(
             market_id=self.market_id,
             title=title,
             price_raw=price_raw,
-            unit_price_raw=unit_price_raw if unit_price_raw else None,
+            unit_price_raw=unit_price_raw,
             url=product_url,
-            image_url=image_url if image_url else None,
-            availability_raw=availability_raw if availability_raw else None,
+            image_url=image_url,
+            availability_raw="Disponível",  # Se aparece na busca, está disponível
             search_query=search_query,
             cep=cep,
             collected_at=datetime.now(),
@@ -178,9 +252,23 @@ class CarrefourScraper(BaseScraper):
                 self.config.base_url,
                 wait_until="domcontentloaded",
             )
+            await page.wait_for_timeout(2000)
             
-            # Procura campo de CEP
-            cep_input = await page.query_selector(self.selectors.cep_input)
+            # Procura campo de CEP (vários seletores possíveis)
+            cep_selectors = [
+                "input[placeholder*='CEP']",
+                "input[placeholder*='cep']",
+                "input[id*='cep']",
+                "input[name*='cep']",
+                "input[data-testid*='cep']",
+            ]
+            
+            cep_input = None
+            for selector in cep_selectors:
+                cep_input = await page.query_selector(selector)
+                if cep_input:
+                    break
+            
             if not cep_input:
                 self.logger.debug("Campo de CEP não encontrado")
                 return False
@@ -189,13 +277,23 @@ class CarrefourScraper(BaseScraper):
             await cep_input.clear()
             await cep_input.type(cep, delay=100)
             
-            # Clica no botão de confirmar
-            if self.selectors.cep_submit:
-                submit_btn = await page.query_selector(self.selectors.cep_submit)
-                if submit_btn:
-                    await submit_btn.click()
-                    # Aguarda confirmação
-                    await page.wait_for_timeout(2000)
+            # Tenta confirmar
+            confirm_selectors = [
+                "button[type='submit']",
+                "button[class*='cep']",
+                "button:has-text('Confirmar')",
+                "button:has-text('OK')",
+            ]
+            
+            for selector in confirm_selectors:
+                try:
+                    btn = await page.query_selector(selector)
+                    if btn:
+                        await btn.click()
+                        await page.wait_for_timeout(2000)
+                        break
+                except:
+                    continue
             
             self.logger.info("CEP configurado", cep=cep)
             return True

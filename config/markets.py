@@ -1,16 +1,8 @@
 """
-Configurações dos Mercados - Versão Corrigida
-==============================================
+Configurações dos mercados com URLs CORRETAS.
+Atualizado em 24/12/2024.
 
-Atualizado em 24/12/2024 baseado no diagnóstico real.
-
-Mudanças:
-- Extra REMOVIDO (site descontinuou e-commerce de supermercado)
-- Pão de Açúcar requer CEP para mostrar produtos
-- URLs corrigidas
-- Seletores atualizados baseados no HTML real
-
-SUBSTITUA config/markets.py por este arquivo.
+NOTA: Extra foi removido pois o e-commerce foi descontinuado.
 """
 
 from dataclasses import dataclass, field
@@ -63,24 +55,26 @@ class MarketConfig:
     method: ScrapingMethod
     status: MarketStatus
     selectors: MarketSelectors
-    requests_per_minute: int = 6
+    requests_per_minute: int = 10
     custom_headers: dict = field(default_factory=dict)
     requires_cep: bool = False
     has_api: bool = False
     api_url: Optional[str] = None
-    default_region: str = "São Paulo - SP"
-    default_cep: str = "01310100"  # Av. Paulista
+    default_region: str = "Salvador - BA"
+    default_cep: str = "40000000"
     
     def get_search_url(self, query: str, page: int = 0) -> str:
         """Monta a URL de busca com a query."""
         return self.search_url.format(query=query, page=page)
 
 
-# =============================================================================
+# CONFIGURAÇÕES DOS MERCADOS
+
+# -----------------------------------------------------------------------------
 # CARREFOUR MERCADO
-# URL testada: https://mercado.carrefour.com.br/busca/arroz%205kg
-# Status: FUNCIONANDO (HTTP 200, produtos encontrados)
-# =============================================================================
+# URL: https://mercado.carrefour.com.br/busca/TERMO
+# IMPORTANTE: Usar quote() (não quote_plus) para encoding - espaço vira %20
+# -----------------------------------------------------------------------------
 CARREFOUR_CONFIG = MarketConfig(
     id="carrefour",
     name="carrefour",
@@ -88,30 +82,33 @@ CARREFOUR_CONFIG = MarketConfig(
     base_url="https://mercado.carrefour.com.br",
     search_url="https://mercado.carrefour.com.br/busca/{query}",
     method=ScrapingMethod.PLAYWRIGHT,
-    status=MarketStatus.ACTIVE,
+    status=MarketStatus.ACTIVE,  # Funcionando!
     requests_per_minute=6,
     requires_cep=False,
     selectors=MarketSelectors(
-        # Baseado nas classes encontradas no diagnóstico
-        product_container="div[class*='product'], article[class*='product'], a[class*='product'], div[data-testid*='product']",
-        product_title="span[class*='productName'], h3[class*='product'], span[class*='name'], a[class*='product'] span",
-        product_price="span[class*='price'], span[class*='sellingPrice'], div[class*='price'] span, p[class*='price']",
-        product_price_cents="span[class*='cents'], span[class*='decimal']",
-        product_unit_price="span[class*='unitPrice'], span[class*='perUnit']",
-        product_link="a[href*='/p'], a[href*='/produto'], a[class*='product']",
-        product_image="img[class*='product'], img[src*='vtex'], img[src*='carrefour']",
-        next_page="button[class*='next'], a[aria-label*='próx']",
-        cep_input="input[placeholder*='CEP'], input[id*='cep']",
-        cep_submit="button[class*='cep'], button[type='submit']",
+        # Container: é um <a> com data-testid
+        product_container='a[data-testid="search-product-card"]',
+        # Título: h2 dentro do card
+        product_title="h2",
+        # Preço: span com classes específicas
+        product_price="span.text-blue-royal.font-bold, span[class*='text-blue-royal'][class*='font-bold']",
+        product_price_cents=None,  # Preço já vem completo
+        product_unit_price="p[class*='text-gray-medium']",
+        # Link: o próprio card é um <a>
+        product_link=None,  # Não precisa, card já é <a>
+        # Imagem
+        product_image="img",
+        product_availability=None,
+        next_page="button[aria-label*='próx'], button[aria-label*='Next']",
+        cep_input="input[placeholder*='CEP']",
+        cep_submit="button[type='submit']",
     ),
 )
 
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # ATACADÃO
-# URL testada: https://www.atacadao.com.br/s?q=arroz%205kg&sort=score_desc&page=0
-# Status: FUNCIONANDO (HTTP 200, 20 produtos encontrados)
-# =============================================================================
+# URL: https://www.atacadao.com.br/s?q=TERMO&sort=score_desc&page=0
+# -----------------------------------------------------------------------------
 ATACADAO_CONFIG = MarketConfig(
     id="atacadao",
     name="atacadao",
@@ -119,31 +116,29 @@ ATACADAO_CONFIG = MarketConfig(
     base_url="https://www.atacadao.com.br",
     search_url="https://www.atacadao.com.br/s?q={query}&sort=score_desc&page={page}",
     method=ScrapingMethod.PLAYWRIGHT,
-    status=MarketStatus.ACTIVE,
+    status=MarketStatus.DEVELOPMENT,
     requests_per_minute=6,
-    requires_cep=True,  # Melhor definir CEP para preços corretos
+    requires_cep=True,
     selectors=MarketSelectors(
-        # Baseado nas classes: SearchInput_searchInput__pH9vT, etc
-        product_container="div[class*='product'], article[class*='product'], a[class*='product'], div[class*='ProductCard']",
-        product_title="h3[class*='product'], span[class*='productName'], p[class*='name'], h2[class*='name']",
-        product_price="span[class*='price'], p[class*='price'], div[class*='price']",
+        product_container="div[class*='product-card'], article[class*='product'], a[class*='product-summary'], div[class*='productCard']",
+        product_title="h3[class*='product'], span[class*='productName'], p[class*='product-name'], h2[class*='name']",
+        product_price="span[class*='price'], p[class*='price'], div[class*='price'], span[class*='sellingPrice']",
         product_price_cents="span[class*='decimal'], span[class*='cents']",
-        product_unit_price="span[class*='unit'], small[class*='unit']",
-        product_link="a[href*='/p/'], a[href*='/produto']",
-        product_image="img[class*='product'], img[src*='atacadao'], img[loading='lazy']",
-        next_page="button[class*='next'], a[aria-label*='Next']",
+        product_unit_price="span[class*='unit'], small[class*='unit'], span[class*='perUnit']",
+        product_link="a[href*='/p/'], a[class*='product-link'], a[href*='/produto']",
+        product_image="img[class*='product'], img[src*='vtexassets'], img[src*='atacadao']",
+        product_availability="span[class*='stock'], div[class*='availability']",
+        next_page="button[class*='next'], a[aria-label*='próx'], button[aria-label*='Next']",
         cep_input="input[placeholder*='CEP'], input[name*='cep']",
-        cep_submit="button[class*='cep'], button[class*='location']",
+        cep_submit="button[class*='cep-button'], button[class*='location']",
     ),
 )
 
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # PÃO DE AÇÚCAR
-# URL testada: https://www.paodeacucar.com/busca?terms=arroz%205kg
-# Status: REQUER CEP - Sem CEP mostra "Nenhum resultado encontrado"
-# Seletores baseados no HTML real do diagnóstico
-# =============================================================================
+# URL: https://www.paodeacucar.com/busca?terms=TERMO
+# NOTA: Requer CEP para mostrar produtos
+# -----------------------------------------------------------------------------
 PAO_ACUCAR_CONFIG = MarketConfig(
     id="pao_acucar",
     name="pao_acucar",
@@ -153,50 +148,37 @@ PAO_ACUCAR_CONFIG = MarketConfig(
     method=ScrapingMethod.PLAYWRIGHT,
     status=MarketStatus.DEVELOPMENT,
     requests_per_minute=6,
-    requires_cep=True,  # OBRIGATÓRIO para mostrar produtos
+    requires_cep=True,  # Sem CEP mostra "Nenhum resultado"
     selectors=MarketSelectors(
-        # Classes encontradas: BoxStyled-sc-iohoom-0, Item-sc-xxx, etc
-        # O site usa styled-components, então classes são dinâmicas
-        product_container="div[class*='ProductCard'], div[class*='product-card'], article[class*='product'], a[class*='product']",
-        product_title="span[class*='name'], h3[class*='product'], p[class*='title'], a[class*='product-name']",
-        product_price="span[class*='price'], p[class*='price'], div[class*='price'] span",
+        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product'], div[class*='ProductCard']",
+        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name'], p[class*='title']",
+        product_price="span[class*='price'], p[class*='price-value'], div[class*='price'], span[class*='value']",
         product_price_cents="span[class*='cents'], span[class*='decimal']",
-        product_unit_price="span[class*='unit-price'], small[class*='price-per']",
-        product_link="a[href*='/produto/'], a[href*='/p/'], a[class*='product']",
-        product_image="img[class*='product'], img[loading='lazy'], img[src*='gpa.digital']",
-        next_page="button[aria-label*='próxima'], a[class*='pagination-next']",
-        cep_input="input[placeholder*='CEP'], input[id*='cep']",
+        product_unit_price="span[class*='unit-price'], small[class*='price-per'], span[class*='perUnit']",
+        product_link="a[class*='product'], a[href*='/produto/'], a[href*='/p/']",
+        product_image="img[class*='product'], img[loading='lazy'], img[src*='paodeacucar']",
+        product_availability="span[class*='stock'], div[class*='availability']",
+        next_page="button[class*='next'], button[aria-label*='próxima'], a[class*='pagination-next']",
+        cep_input="input[placeholder*='CEP']",
         cep_submit="button[class*='location'], button[class*='cep']",
     ),
 )
 
 
-# =============================================================================
-# EXTRA - DESCONTINUADO
-# O site Extra.com.br não oferece mais e-commerce de supermercado
-# Redireciona para Casas Bahia. NÃO INCLUIR.
-# =============================================================================
-# EXTRA_CONFIG foi removido
+# REGISTRY DE MERCADOS
 
-
-# =============================================================================
-# Dicionário de mercados ativos
-# =============================================================================
 MARKETS_CONFIG: dict[str, MarketConfig] = {
     "carrefour": CARREFOUR_CONFIG,
     "atacadao": ATACADAO_CONFIG,
     "pao_acucar": PAO_ACUCAR_CONFIG,
-    # "extra" foi removido - site descontinuado
 }
 
 
 def get_market_config(market_id: str) -> MarketConfig:
     """Retorna a configuração de um mercado específico."""
     if market_id not in MARKETS_CONFIG:
-        raise ValueError(
-            f"Mercado '{market_id}' não configurado. "
-            f"Disponíveis: {list(MARKETS_CONFIG.keys())}"
-        )
+        raise ValueError(f"Mercado '{market_id}' não configurado. "
+                        f"Disponíveis: {list(MARKETS_CONFIG.keys())}")
     return MARKETS_CONFIG[market_id]
 
 
@@ -205,12 +187,4 @@ def get_active_markets() -> list[MarketConfig]:
     return [
         config for config in MARKETS_CONFIG.values()
         if config.status in (MarketStatus.ACTIVE, MarketStatus.DEVELOPMENT)
-    ]
-
-
-def get_markets_requiring_cep() -> list[str]:
-    """Retorna lista de IDs de mercados que requerem CEP."""
-    return [
-        config.id for config in MARKETS_CONFIG.values()
-        if config.requires_cep
     ]
