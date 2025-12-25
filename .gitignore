@@ -31,3 +31,16 @@ playwright/.cache/
 # OS
 .DS_Store
 Thumbs.db
+
+#Imagens
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+
+#Html
+*.html
+
+#Sheets
+*.csv

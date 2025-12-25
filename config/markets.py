@@ -173,9 +173,17 @@ CARREFOUR_CONFIG = MarketConfig(
 )
 
 # -----------------------------------------------------------------------------
-# PÃO DE AÇÚCAR
+# PÃO DE AÇÚCAR - SELETORES CORRIGIDOS BASEADOS NO HTML REAL
 # URL: https://www.paodeacucar.com/busca?terms=TERMO
-# NOTA: Requer CEP para mostrar produtos
+# 
+# Estrutura identificada no HTML (análise 25/12/2024):
+# - Container: div.CardStyled-sc-20azeh-0 (75 instâncias)
+# - Preço: p.PriceValue-sc-20azeh-4 (58 instâncias)
+# - Título: a.Title-sc-20azeh-10
+# - Imagem: img.Image-sc-20azeh-2
+# - Link: a[href*="/produto/"]
+# 
+# NOTA: Requer CEP para mostrar produtos com preço
 # -----------------------------------------------------------------------------
 PAO_ACUCAR_CONFIG = MarketConfig(
     id="pao_acucar",
@@ -184,21 +192,45 @@ PAO_ACUCAR_CONFIG = MarketConfig(
     base_url="https://www.paodeacucar.com",
     search_url="https://www.paodeacucar.com/busca?terms={query}",
     method=ScrapingMethod.PLAYWRIGHT,
-    status=MarketStatus.DEVELOPMENT,
+    status=MarketStatus.ACTIVE,  # Agora funcional!
     requests_per_minute=6,
     requires_cep=True,
+    default_cep="01310-100",  # Av. Paulista, São Paulo
     selectors=MarketSelectors(
-        product_container="div[class*='product-card'], div[data-testid*='product'], article[class*='product']",
-        product_title="h3[class*='product'], a[class*='product-name'], span[class*='name']",
-        product_price="span[class*='price'], p[class*='price-value'], div[class*='price']",
-        product_price_cents="span[class*='cents'], span[class*='decimal']",
-        product_unit_price="span[class*='unit-price'], small[class*='price-per']",
-        product_link="a[class*='product'], a[href*='/produto/'], a[href*='/p/']",
-        product_image="img[class*='product'], img[loading='lazy']",
-        product_availability="span[class*='stock'], div[class*='availability']",
-        next_page="button[class*='next'], button[aria-label*='próxima']",
-        cep_input="input[placeholder*='CEP']",
-        cep_submit="button[class*='location'], button[class*='cep']",
+        # Container: card completo do produto
+        # <div class="Card-sc-yvvqkp-0 bUWsSi CardStyled-sc-20azeh-0 kFyEoJ">
+        product_container="div.CardStyled-sc-20azeh-0",
+        
+        # Título: <a class="Link-sc-j02w35-0 bEJTOI Title-sc-20azeh-10 gdVmss">
+        product_title="a.Title-sc-20azeh-10, a[class*='Title-sc-20azeh']",
+        
+        # Preço: <p class="PriceValue-sc-20azeh-4 hHjSYF">R$ 24,99</p>
+        product_price="p.PriceValue-sc-20azeh-4, p[class*='PriceValue-sc-20azeh']",
+        
+        # Centavos já incluídos no preço principal
+        product_price_cents=None,
+        
+        # Preço unitário (kg, litro, etc) - a ser identificado
+        product_unit_price="span[class*='unit-price'], p[class*='unit']",
+        
+        # Link do produto: a[href*="/produto/"]
+        product_link="a[href*='/produto/']",
+        
+        # Imagem: <img class="Image-sc-20azeh-2 kenac">
+        product_image="img.Image-sc-20azeh-2, img[class*='Image-sc-20azeh']",
+        
+        # Disponibilidade (botão de adicionar)
+        product_availability="button[class*='add'], button[class*='cart']",
+        
+        # Paginação
+        next_page="button[aria-label*='próxima'], a[aria-label*='próxima']",
+        
+        # Total de resultados
+        total_results="span[class*='total'], p[class*='results']",
+        
+        # CEP
+        cep_input="input[placeholder*='CEP'], input[data-testid*='cep']",
+        cep_submit="button[type='submit'], button:has-text('Confirmar')",
     ),
 )
 
@@ -217,6 +249,7 @@ def get_market_config(market_id: str) -> MarketConfig:
         raise ValueError(f"Mercado '{market_id}' não configurado. "
                         f"Disponíveis: {list(MARKETS_CONFIG.keys())}")
     return MARKETS_CONFIG[market_id]
+
 
 def get_active_markets() -> list[MarketConfig]:
     """Retorna lista de mercados ativos para scraping."""
