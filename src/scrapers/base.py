@@ -3,7 +3,8 @@ Classe base para scrapers de mercados.
 Com configurações melhoradas para evitar detecção de bot e
 detecção de bloqueio corrigida para evitar falsos positivos.
 
-SUBSTITUA o conteúdo de src/scrapers/base.py por este arquivo.
+VERSÃO CORRIGIDA: Adiciona método _build_search_url() que cada scraper pode sobrescrever
+para usar o encoding correto (quote vs quote_plus).
 """
 
 import asyncio
@@ -11,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 import random
 import re
 
@@ -176,6 +177,30 @@ class BaseScraper(ABC, LoggerMixin):
         """
         pass
     
+    # MÉTODO PARA CONSTRUIR URL - PODE SER SOBRESCRITO POR CADA SCRAPER
+    
+    def _build_search_url(self, query: str, page: int = 0) -> str:
+        """
+        Constrói a URL de busca para o mercado.
+        
+        IMPORTANTE: Este método pode (e deve) ser sobrescrito por scrapers
+        que precisam de encoding diferente ou estrutura de URL específica.
+        
+        Por padrão, usa quote() que transforma espaços em %20.
+        Scrapers que usam query string (ex: ?q=...) devem sobrescrever
+        para usar quote_plus() que transforma espaços em +.
+        
+        Args:
+            query: Termo de busca (não codificado)
+            page: Número da página (0-indexed)
+            
+        Returns:
+            URL completa de busca
+        """
+        # Por padrão, usa a configuração do mercado com quote()
+        encoded_query = quote(query)
+        return self.config.get_search_url(encoded_query, page)
+    
     # MÉTODOS COMUNS
     
     async def search(
@@ -219,10 +244,14 @@ class BaseScraper(ABC, LoggerMixin):
                 # Rate limiting
                 await self.rate_limiter.acquire(self.market_id)
                 
-                # Navega para página de busca
-                search_url = self.config.get_search_url(
-                    quote(query),
-                    page_num - 1,  # Muitos sites usam page=0 como primeiro
+                # CORREÇÃO: Usa _build_search_url ao invés de config.get_search_url
+                # Isso permite que cada scraper defina seu próprio encoding
+                search_url = self._build_search_url(query, page_num - 1)
+                
+                self.logger.debug(
+                    "URL de busca construída",
+                    market=self.market_id,
+                    url=search_url,
                 )
                 
                 products = await self._scrape_page(
@@ -418,13 +447,6 @@ class BaseScraper(ABC, LoggerMixin):
     def _is_false_positive(self, content: str, indicator: str) -> bool:
         """
         Verifica se a detecção é um falso positivo.
-        
-        Args:
-            content: Conteúdo da página (lowercase)
-            indicator: Indicador que foi encontrado
-            
-        Returns:
-            True se for falso positivo (não é bloqueio real)
         """
         # Verifica contextos conhecidos de falso positivo
         for context in self.FALSE_POSITIVE_CONTEXTS:
@@ -438,12 +460,11 @@ class BaseScraper(ABC, LoggerMixin):
         
         # Se "robot" aparece, verifica se é produto
         if "robot" in indicator or "robô" in indicator:
-            # Padrões de produtos com robô
             robot_product_patterns = [
-                r"robô.*\d+.*ml",  # Robô com capacidade
-                r"robô.*\d+.*w",   # Robô com potência
-                r"r\$.*robô",      # Preço antes de robô
-                r"robô.*r\$",      # Robô antes de preço
+                r"robô.*\d+.*ml",
+                r"robô.*\d+.*w",
+                r"r\$.*robô",
+                r"robô.*r\$",
                 r"aspirador.*robô",
                 r"robô.*aspirador",
             ]
@@ -453,14 +474,12 @@ class BaseScraper(ABC, LoggerMixin):
         
         # Se "cloudflare" aparece, verifica se é apenas menção no footer/scripts
         if "cloudflare" in indicator:
-            # Cloudflare challenge tem frases específicas
             challenge_phrases = [
                 "checking your browser",
                 "please wait",
                 "enable javascript",
                 "ray id",
             ]
-            # Se nenhuma frase de challenge, é falso positivo
             if not any(phrase in content for phrase in challenge_phrases):
                 return True
         
@@ -469,20 +488,12 @@ class BaseScraper(ABC, LoggerMixin):
     def _has_product_indicators(self, content: str) -> bool:
         """
         Verifica se a página contém indicadores de produtos.
-        Se houver produtos, definitivamente não é uma página de bloqueio.
-        
-        Args:
-            content: Conteúdo da página (lowercase)
-            
-        Returns:
-            True se a página parece ter produtos
         """
-        # Indicadores de que a página tem produtos
         product_indicators = [
             "adicionar ao carrinho",
             "add to cart",
             "comprar",
-            "r$ ",  # Preço
+            "r$ ",
             "preço",
             "price",
             "produto",
@@ -492,10 +503,7 @@ class BaseScraper(ABC, LoggerMixin):
             "/l",
         ]
         
-        # Conta quantos indicadores foram encontrados
         found_count = sum(1 for ind in product_indicators if ind in content)
-        
-        # Se encontrou 3 ou mais indicadores, provavelmente tem produtos
         return found_count >= 3
     
     # GERENCIAMENTO DO BROWSER - CONFIGURAÇÃO ANTI-DETECÇÃO
@@ -507,7 +515,6 @@ class BaseScraper(ABC, LoggerMixin):
         
         self._playwright = await async_playwright().start()
         
-        # Usa Chromium com configurações anti-detecção
         self._browser = await self._playwright.chromium.launch(
             headless=self.settings.headless,
             args=[
@@ -521,13 +528,12 @@ class BaseScraper(ABC, LoggerMixin):
             ],
         )
         
-        # Contexto com configurações que parecem um browser real
         self._context = await self._browser.new_context(
             user_agent=random.choice(self.USER_AGENTS),
             viewport={"width": 1920, "height": 1080},
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
-            geolocation={"latitude": -12.9714, "longitude": -38.5014},  # Salvador
+            geolocation={"latitude": -12.9714, "longitude": -38.5014},
             permissions=["geolocation"],
             java_script_enabled=True,
             accept_downloads=False,
@@ -546,19 +552,15 @@ class BaseScraper(ABC, LoggerMixin):
             },
         )
         
-        # Adiciona script para esconder automação
         await self._context.add_init_script("""
-            // Esconde webdriver
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined,
             });
             
-            // Esconde automação do Chrome
             window.chrome = {
                 runtime: {},
             };
             
-            // Esconde permissões
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
@@ -566,12 +568,10 @@ class BaseScraper(ABC, LoggerMixin):
                     originalQuery(parameters)
             );
             
-            // Plugins falsos
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5],
             });
             
-            // Languages
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['pt-BR', 'pt', 'en-US', 'en'],
             });
@@ -583,8 +583,6 @@ class BaseScraper(ABC, LoggerMixin):
             await self._init_browser()
         
         page = await self._context.new_page()
-        
-        # Configura timeout padrão
         page.set_default_timeout(self.settings.playwright_timeout)
         
         return page
@@ -612,7 +610,6 @@ class BaseScraper(ABC, LoggerMixin):
         default: str = "",
     ) -> str:
         """Extrai texto de elemento de forma segura."""
-        # Tenta múltiplos seletores separados por vírgula
         selectors = selector.split(", ")
         
         for sel in selectors:

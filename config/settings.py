@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     )
     
     # Playwright
-    headless: bool = False
+    headless: bool = True
     slow_mo: int = Field(default=0, ge=0, le=1000)
     
     @field_validator("data_path", "log_path", mode="after")

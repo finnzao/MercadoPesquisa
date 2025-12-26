@@ -24,8 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 async def test_scraper(
     search_term: str = "arroz 5kg",
     cep: str = "01310-100",
-    headless: bool = True,
-    debug: bool = False,
+    headless: bool = False,
+    debug: bool = True,
 ):
     """
     Testa o scraper do Pão de Açúcar.
