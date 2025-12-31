@@ -1,115 +1,370 @@
 """
-Scraper específico para Pão de Açúcar - VERSÃO CORRIGIDA.
+Scraper específico para Pão de Açúcar - VERSÃO API INDEPENDENTE.
 https://www.paodeacucar.com
 
-CORREÇÃO: Sobrescreve _build_search_url() para usar quote_plus()
-pois o Pão de Açúcar usa query string (?terms=...) que precisa de + para espaços.
+Esta versão usa a API interna do Pão de Açúcar para buscar produtos.
+O scraper é INDEPENDENTE do base.py, gerenciando seu próprio browser
+com as configurações exatas do script de teste que funciona.
 
-Estrutura identificada:
-- Produtos em <div class="CardStyled-sc-20azeh-0">
-- Preço em <p class="PriceValue-sc-20azeh-4">
-- Título em <a class="Title-sc-20azeh-10">
+API utilizada:
+- POST https://api.vendas.gpa.digital/pa/search/search
+
+A requisição é executada de DENTRO do contexto do navegador
+(via page.evaluate) para evitar problemas de CORS.
 """
 
+import asyncio
+import random
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urljoin, quote_plus
+from urllib.parse import quote_plus
 
-from playwright.async_api import Page, ElementHandle
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Playwright
 
+from config.logging_config import LoggerMixin
 from config.markets import PAO_ACUCAR_CONFIG, MarketConfig
 from src.core.models import RawProduct
-from src.scrapers.base import BaseScraper
+from src.core.types import CollectionStatus
 
 
-class PaoDeAcucarScraper(BaseScraper):
-    """
-    Scraper para Pão de Açúcar.
-    Site de supermercado com entrega em domicílio.
+@dataclass
+class ScraperResult:
+    """Resultado de uma execução de scraper."""
     
-    CORREÇÃO: Usa quote_plus() para encoding da URL de busca.
+    market_id: str
+    search_query: str
+    status: CollectionStatus
+    products: list[RawProduct] = field(default_factory=list)
+    error_message: Optional[str] = None
+    started_at: datetime = field(default_factory=datetime.now)
+    finished_at: Optional[datetime] = None
+    pages_scraped: int = 0
+    
+    def mark_finished(self):
+        """Marca como finalizado."""
+        self.finished_at = datetime.now()
+    
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        """Duração em segundos."""
+        if self.finished_at:
+            return (self.finished_at - self.started_at).total_seconds()
+        return None
+    
+    @property
+    def products_count(self) -> int:
+        """Quantidade de produtos coletados."""
+        return len(self.products)
+
+
+class PaoDeAcucarScraper(LoggerMixin):
     """
+    Scraper para Pão de Açúcar usando API interna.
+    
+    Esta versão é INDEPENDENTE do BaseScraper e gerencia seu próprio
+    browser com as configurações exatas do script de teste que funciona.
+    
+    A requisição à API é feita de DENTRO do contexto do navegador
+    (page.evaluate) para evitar CORS.
+    """
+    
+    # Configurações da API (baseado no script de teste que funciona)
+    API_URL = "https://api.vendas.gpa.digital/pa/search/search"
+    DEFAULT_STORE_ID = 461  # Store ID padrão (São Paulo)
+    PRODUCTS_PER_PAGE = 16
     
     def __init__(self, config: Optional[MarketConfig] = None):
         """Inicializa o scraper."""
-        super().__init__(config or PAO_ACUCAR_CONFIG)
-    
-    def _build_search_url(self, query: str, page: int = 0) -> str:
-        """
-        Constrói a URL de busca para o Pão de Açúcar.
+        self.config = config or PAO_ACUCAR_CONFIG
+        self._store_id = self.DEFAULT_STORE_ID
         
-        CORREÇÃO: Usa quote_plus() ao invés de quote() porque o Pão de Açúcar
-        usa query string (?terms=...) e espera espaços como +.
-        
-        Exemplo:
-            query="arroz 5 kg" -> https://www.paodeacucar.com/busca?terms=arroz+5+kg
-        """
-        encoded_query = quote_plus(query)
-        url = f"{self.config.base_url}/busca?terms={encoded_query}"
-        if page > 0:
-            url += f"&page={page}"
-        return url
+        # Estado do Playwright (gerenciado internamente)
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
     
-    async def extract_products(
+    @property
+    def market_id(self) -> str:
+        """ID do mercado."""
+        return self.config.id
+    
+    async def search(
         self,
-        page: Page,
-        search_query: str,
+        query: str,
         cep: Optional[str] = None,
-    ) -> list[RawProduct]:
-        """Extrai produtos da página de resultados do Pão de Açúcar."""
-        products = []
+        max_pages: int = 1,
+    ) -> ScraperResult:
+        """
+        Executa busca no Pão de Açúcar usando a API.
         
-        await self._wait_for_products_load(page)
-        await self._scroll_to_load_all(page)
+        Fluxo (exatamente igual ao script de teste):
+        1. Inicia browser com configurações anti-detecção
+        2. Navega para a HOME do site (estabelece contexto)
+        3. Faz requisição POST à API de dentro do navegador
+        4. Processa resposta JSON
         
-        # Tenta fechar modal de CEP se aparecer
-        await self._close_cep_modal(page)
-        
-        product_cards = await page.query_selector_all(
-            "div.CardStyled-sc-20azeh-0"
+        Args:
+            query: Termo de busca
+            cep: CEP opcional para localização
+            max_pages: Número máximo de páginas
+            
+        Returns:
+            ScraperResult com produtos encontrados
+        """
+        result = ScraperResult(
+            market_id=self.market_id,
+            search_query=query,
+            status=CollectionStatus.FAILED,
         )
-        
-        if not product_cards:
-            self.logger.debug("Tentando seletores alternativos...")
-            product_cards = await page.query_selector_all(
-                "div[class*='CardStyled-sc-20azeh']"
-            )
-        
-        if not product_cards:
-            product_cards = await page.query_selector_all(
-                "div.MuiGrid-item div[class*='Card-sc']"
-            )
-        
-        if not product_cards:
-            product_cards = await page.query_selector_all(
-                "div:has(p[class*='PriceValue']):has(a[href*='/produto/'])"
-            )
         
         self.logger.info(
-            "Cards de produto encontrados",
-            count=len(product_cards),
+            "Iniciando busca",
+            market=self.market_id,
+            query=query,
+            cep=cep,
         )
         
-        for idx, card in enumerate(product_cards):
-            try:
-                product = await self._extract_single_product(
-                    card,
-                    page,
-                    search_query,
-                    cep,
-                    idx + 1,
+        try:
+            # PASSO 1: Inicia browser (configurações do script de teste)
+            await self._init_browser()
+            page = await self._context.new_page()
+            
+            # PASSO 2: Navega para a HOME do site primeiro
+            # Isso é ESSENCIAL para que as requisições à API funcionem sem CORS
+            self.logger.debug("Navegando para o site (estabelecendo contexto)...")
+            await page.goto(
+                "https://www.paodeacucar.com/",
+                wait_until="domcontentloaded",
+            )
+            await page.wait_for_timeout(2000)
+            
+            # Configura CEP se fornecido
+            if cep:
+                await self._try_set_cep(page, cep)
+            
+            # PASSO 3: Coleta produtos via API
+            all_products = []
+            
+            for page_num in range(1, max_pages + 1):
+                self.logger.info(
+                    "Buscando via API",
+                    query=query,
+                    store_id=self._store_id,
+                    page=page_num,
                 )
+                
+                # Chama a API de DENTRO do navegador
+                api_data = await self._fetch_api(page, query, page_num)
+                
+                if api_data and not api_data.get("error"):
+                    # Processa produtos da API
+                    products = self._parse_api_response(api_data, query, cep)
+                    
+                    if products:
+                        all_products.extend(products)
+                        result.pages_scraped += 1
+                        self.logger.info(
+                            "Página coletada via API",
+                            page=page_num,
+                            products=len(products),
+                        )
+                    else:
+                        break
+                    
+                    # Verifica se há mais páginas
+                    total_products = api_data.get("totalProducts", 0)
+                    if page_num * self.PRODUCTS_PER_PAGE >= total_products:
+                        break
+                    
+                    # Delay entre páginas
+                    if page_num < max_pages:
+                        await asyncio.sleep(random.uniform(1, 2))
+                else:
+                    # API falhou
+                    error_msg = api_data.get("message") if api_data else "No response"
+                    self.logger.warning(
+                        "API falhou",
+                        error=error_msg,
+                    )
+                    break
+            
+            result.products = all_products
+            result.status = (
+                CollectionStatus.SUCCESS if all_products
+                else CollectionStatus.NO_RESULTS
+            )
+            
+        except Exception as e:
+            result.status = CollectionStatus.FAILED
+            result.error_message = str(e)
+            self.logger.error("Erro na coleta", error=str(e), exc_info=True)
+            
+        finally:
+            await self._close_browser()
+            result.mark_finished()
+        
+        self.logger.info(
+            "Busca finalizada",
+            market=self.market_id,
+            status=result.status.value,
+            products=result.products_count,
+            duration=f"{result.duration_seconds:.2f}s" if result.duration_seconds else "N/A",
+        )
+        
+        return result
+    
+    async def _init_browser(self) -> None:
+        """
+        Inicializa browser com configurações EXATAS do script de teste.
+        """
+        if self._browser is not None:
+            return
+        
+        self._playwright = await async_playwright().start()
+        
+        # Configurações EXATAS do script de teste
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ]
+        )
+        
+        # Contexto com configurações EXATAS do script de teste
+        self._context = await self._browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            locale="pt-BR",
+        )
+    
+    async def _close_browser(self) -> None:
+        """Fecha browser e libera recursos."""
+        if self._context:
+            await self._context.close()
+            self._context = None
+        
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+    
+    async def _fetch_api(
+        self,
+        page: Page,
+        query: str,
+        page_num: int = 1,
+    ) -> Optional[dict]:
+        """
+        Faz requisição POST à API de DENTRO do contexto do navegador.
+        
+        IMPORTANTE: Usar page.evaluate() é a SOLUÇÃO para o problema de CORS!
+        A requisição parte do contexto do site, então o servidor aceita.
+        
+        Código JavaScript EXATO do script de teste.
+        """
+        # Payload EXATO do script de teste
+        api_payload = {
+            "terms": query,
+            "page": page_num,
+            "sortBy": "relevance",
+            "resultsPerPage": self.PRODUCTS_PER_PAGE,
+            "allowRedirect": True,
+            "storeId": self._store_id,
+            "department": "ecom",
+            "customerPlus": True,
+            "partner": "linx",
+        }
+        
+        try:
+            # JavaScript EXATO do script de teste
+            result = await page.evaluate("""
+                async (payload) => {
+                    try {
+                        const response = await fetch("https://api.vendas.gpa.digital/pa/search/search", {
+                            method: "POST",
+                            headers: {
+                                "Accept": "application/json, text/plain, */*",
+                                "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify(payload),
+                        });
+                        
+                        if (!response.ok) {
+                            return {
+                                error: true,
+                                status: response.status,
+                                statusText: response.statusText,
+                            };
+                        }
+                        
+                        const data = await response.json();
+                        return {
+                            error: false,
+                            data: data,
+                        };
+                    } catch (e) {
+                        return {
+                            error: true,
+                            message: e.message,
+                        };
+                    }
+                }
+            """, api_payload)
+            
+            if result.get("error"):
+                self.logger.warning(
+                    "Erro na requisição API",
+                    error=result.get("message") or result.get("statusText") or str(result),
+                )
+                return result
+            
+            return result.get("data")
+            
+        except Exception as e:
+            self.logger.error(
+                "Exceção ao chamar API",
+                error=str(e),
+            )
+            return {"error": True, "message": str(e)}
+    
+    def _parse_api_response(
+        self,
+        api_data: dict,
+        search_query: str,
+        cep: Optional[str],
+    ) -> list[RawProduct]:
+        """
+        Processa a resposta da API e converte para RawProduct.
+        
+        Estrutura da resposta (do script de teste):
+        {
+            "products": [...],
+            "totalProducts": 75,
+            ...
+        }
+        """
+        products = []
+        
+        items = api_data.get("products", [])
+        
+        if not items:
+            self.logger.debug("Nenhum produto encontrado na resposta da API")
+            return products
+        
+        for idx, item in enumerate(items):
+            try:
+                product = self._parse_api_product(item, search_query, cep, idx + 1)
                 if product:
                     products.append(product)
-                    self.logger.debug(
-                        "Produto extraído",
-                        title=product.title[:50] if product.title else "N/A",
-                        price=product.price_raw,
-                    )
             except Exception as e:
                 self.logger.debug(
-                    "Erro ao extrair produto",
+                    "Erro ao processar produto da API",
                     index=idx,
                     error=str(e),
                 )
@@ -117,85 +372,83 @@ class PaoDeAcucarScraper(BaseScraper):
         
         return products
     
-    async def _close_cep_modal(self, page: Page) -> None:
-        """Tenta fechar o modal de CEP se estiver aberto."""
-        try:
-            # Tenta fechar clicando no X ou em "Fechar"
-            close_selectors = [
-                "button[aria-label='close']",
-                "button[aria-label='fechar']",
-                "button:has-text('Fechar')",
-                "button:has-text('X')",
-                "div[role='dialog'] button:first-child",
-            ]
-            
-            for selector in close_selectors:
-                try:
-                    close_btn = await page.query_selector(selector)
-                    if close_btn:
-                        await close_btn.click()
-                        await page.wait_for_timeout(500)
-                        self.logger.debug("Modal de CEP fechado")
-                        return
-                except Exception:
-                    continue
-            
-            # Se não encontrou botão, tenta clicar fora do modal
-            await page.click("body", position={"x": 10, "y": 10}, force=True)
-            await page.wait_for_timeout(300)
-            
-        except Exception as e:
-            self.logger.debug(f"Erro ao fechar modal de CEP: {e}")
-    
-    async def _wait_for_products_load(self, page: Page) -> None:
-        """Aguarda o carregamento dos produtos na página."""
-        try:
-            await page.wait_for_selector(
-                "div.MuiGrid-container, div[class*='CardStyled'], div[class*='Card-sc']",
-                timeout=15000,
-            )
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            self.logger.warning(f"Timeout aguardando produtos: {e}")
-    
-    async def _scroll_to_load_all(self, page: Page) -> None:
-        """Faz scroll para carregar produtos lazy-loaded."""
-        try:
-            for i in range(5):
-                await page.evaluate("window.scrollBy(0, window.innerHeight)")
-                await page.wait_for_timeout(800)
-            await page.evaluate("window.scrollTo(0, 0)")
-            await page.wait_for_timeout(500)
-        except Exception as e:
-            self.logger.debug(f"Erro no scroll: {e}")
-    
-    async def _extract_single_product(
+    def _parse_api_product(
         self,
-        card: ElementHandle,
-        page: Page,
+        item: dict,
         search_query: str,
         cep: Optional[str],
-        index: int,
+        position: int,
     ) -> Optional[RawProduct]:
-        """Extrai dados de um único card de produto."""
+        """
+        Converte um item da API para RawProduct.
         
-        title = await self._extract_title(card)
+        Campos da API (do script de teste):
+        - name / title: nome do produto
+        - price: preço
+        - originalPrice: preço original (sem desconto)
+        - unitPrice: preço por unidade
+        - unit: unidade (kg, L, etc)
+        - image / imageUrl: URL da imagem
+        - url: URL do produto
+        - available: disponibilidade
+        - id: ID do produt o
+        - brand: marca
+        """
+        # Extrai título
+        title = item.get("name") or item.get("title") or ""
         if not title:
             return None
         
-        price_raw = await self._extract_price(card)
-        if not price_raw:
+        # Extrai preço
+        price = item.get("price")
+        if price is None:
             return None
         
-        product_url = await self._extract_product_url(card, page)
-        image_url = await self._extract_image_url(card)
-        is_available = await self._check_availability(card)
+        try:
+            price_float = float(price)
+        except (ValueError, TypeError):
+            return None
+        
+        # Formata preço no padrão brasileiro
+        price_raw = f"R$ {price_float:.2f}".replace(".", ",")
+        
+        # Extrai preço unitário se disponível
+        unit_price_raw = None
+        unit_price = item.get("unitPrice")
+        unit = item.get("unit", "")
+        if unit_price:
+            try:
+                unit_price_raw = f"R$ {float(unit_price):.2f}/{unit}".replace(".", ",")
+            except (ValueError, TypeError):
+                pass
+        
+        # Extrai URL do produto
+        product_url = item.get("url", "")
+        if product_url:
+            if not product_url.startswith("http"):
+                product_url = f"https://www.paodeacucar.com{product_url}"
+        else:
+            product_id = item.get("id")
+            if product_id:
+                product_url = f"https://www.paodeacucar.com/produto/{product_id}/p"
+            else:
+                product_url = "https://www.paodeacucar.com"
+        
+        # Extrai URL da imagem
+        image_url = item.get("image") or item.get("imageUrl")
+        
+        # Verifica disponibilidade
+        is_available = item.get("available", True)
+        
+        # Extrai ID externo
+        external_id = str(item.get("id", "")) if item.get("id") else None
         
         return RawProduct(
             market_id=self.market_id,
-            title=title,
+            external_id=external_id,
+            title=title.strip(),
             price_raw=price_raw,
-            unit_price_raw=None,
+            unit_price_raw=unit_price_raw,
             url=product_url,
             image_url=image_url,
             availability_raw="Disponível" if is_available else "Indisponível",
@@ -203,251 +456,82 @@ class PaoDeAcucarScraper(BaseScraper):
             cep=cep,
             collected_at=datetime.now(),
             extra_data={
-                "position": index,
+                "position": position,
+                "source": "api",
+                "brand": item.get("brand"),
+                "original_price": item.get("originalPrice"),
+                "quantity": item.get("quantity"),
             },
         )
     
-    async def _extract_title(self, card: ElementHandle) -> Optional[str]:
-        """Extrai o título do produto."""
-        selectors = [
-            "a.Title-sc-20azeh-10",
-            "a[class*='Title-sc-20azeh']",
-            "a[class*='Title-sc']",
-        ]
-        
-        for selector in selectors:
-            try:
-                elem = await card.query_selector(selector)
-                if elem:
-                    text = await elem.inner_text()
-                    if text and text.strip():
-                        return text.strip()
-            except Exception:
-                continue
-        
+    async def _try_set_cep(self, page: Page, cep: str) -> bool:
+        """
+        Tenta configurar CEP e obter store_id correspondente.
+        """
         try:
-            img = await card.query_selector("img")
-            if img:
-                alt = await img.get_attribute("alt")
-                if alt and alt.strip():
-                    return alt.strip()
-        except Exception:
-            pass
-        
-        try:
-            link = await card.query_selector("a[href*='/produto/']")
-            if link:
-                text = await link.inner_text()
-                if text and text.strip():
-                    return text.strip()
-        except Exception:
-            pass
-        
-        return None
-    
-    async def _extract_price(self, card: ElementHandle) -> Optional[str]:
-        """Extrai o preço do produto."""
-        selectors = [
-            "p.PriceValue-sc-20azeh-4",
-            "p[class*='PriceValue-sc-20azeh']",
-            "p[class*='PriceValue-sc']",
-            "div[class*='PriceContainer'] p",
-        ]
-        
-        for selector in selectors:
-            try:
-                elem = await card.query_selector(selector)
-                if elem:
-                    text = await elem.inner_text()
-                    if text and "R$" in text:
-                        return self._clean_price(text)
-            except Exception:
-                continue
-        
-        try:
-            all_text = await card.inner_text()
-            match = re.search(r'R\$\s*[\d.,]+', all_text)
-            if match:
-                return self._clean_price(match.group())
-        except Exception:
-            pass
-        
-        return None
-    
-    async def _extract_product_url(self, card: ElementHandle, page: Page) -> str:
-        """Extrai a URL do produto."""
-        try:
-            link = await card.query_selector("a[href*='/produto/']")
-            if link:
-                href = await link.get_attribute("href")
-                if href:
-                    return urljoin(self.config.base_url, href)
-        except Exception:
-            pass
-        
-        return page.url
-    
-    async def _extract_image_url(self, card: ElementHandle) -> Optional[str]:
-        """Extrai a URL da imagem do produto."""
-        try:
-            img = await card.query_selector("img.Image-sc-20azeh-2")
-            if not img:
-                img = await card.query_selector("img[class*='Image-sc']")
-            if not img:
-                img = await card.query_selector("img")
+            cep_clean = cep.replace("-", "").replace(".", "")
             
-            if img:
-                src = await img.get_attribute("src")
-                if src and not src.startswith("data:"):
-                    return src
-                
-                data_src = await img.get_attribute("data-src")
-                if data_src:
-                    return data_src
-                
-                srcset = await img.get_attribute("srcset")
-                if srcset:
-                    urls = re.findall(r'(https?://[^\s]+)', srcset)
-                    if urls:
-                        return urls[0]
-        except Exception:
-            pass
-        
-        return None
-    
-    async def _check_availability(self, card: ElementHandle) -> bool:
-        """Verifica se o produto está disponível."""
-        try:
-            price_elem = await card.query_selector("p[class*='PriceValue']")
-            if price_elem:
-                text = await price_elem.inner_text()
-                if text and "R$" in text:
+            # Tenta obter store_id pelo CEP usando a API
+            store_result = await page.evaluate("""
+                async (cep) => {
+                    try {
+                        const response = await fetch(`https://api.vendas.gpa.digital/pa/delivery/stores?zipCode=${cep}`, {
+                            method: "GET",
+                            headers: {
+                                "Accept": "application/json",
+                            },
+                        });
+                        
+                        if (!response.ok) {
+                            return { error: true, status: response.status };
+                        }
+                        
+                        const data = await response.json();
+                        return { error: false, data: data };
+                    } catch (e) {
+                        return { error: true, message: e.message };
+                    }
+                }
+            """, cep_clean)
+            
+            if store_result.get("error"):
+                self.logger.debug("Não foi possível obter store_id pelo CEP")
+                return False
+            
+            stores = store_result.get("data", {}).get("stores", [])
+            if stores:
+                store_id = stores[0].get("id")
+                store_name = stores[0].get("name", "")
+                if store_id:
+                    self._store_id = int(store_id)
+                    self.logger.info(
+                        "Store ID obtido pelo CEP",
+                        store_id=self._store_id,
+                        store_name=store_name,
+                        cep=cep,
+                    )
                     return True
             
-            button = await card.query_selector("button")
-            if button:
-                is_disabled = await button.get_attribute("disabled")
-                if is_disabled is None:
-                    return True
-        except Exception:
-            pass
-        
-        return True
-    
-    def _clean_price(self, price_text: str) -> str:
-        """Limpa e normaliza texto de preço."""
-        if not price_text:
-            return ""
-        
-        cleaned = " ".join(price_text.split())
-        
-        match = re.search(r'R\$?\s*([\d.,]+)', cleaned)
-        if match:
-            value = match.group(1)
-            if "." in value and "," not in value:
-                value = value.replace(".", ",")
-            return f"R$ {value}"
-        
-        return cleaned
-    
-    async def set_location(
-        self,
-        page: Page,
-        cep: str,
-    ) -> bool:
-        """Configura CEP no Pão de Açúcar."""
-        try:
-            self.logger.debug("Tentando configurar CEP", cep=cep)
-            
-            await page.goto(
-                self.config.base_url,
-                wait_until="domcontentloaded",
-            )
-            await page.wait_for_timeout(2000)
-            
-            cep_modal = await page.query_selector(
-                "div[class*='modal'], div[class*='Modal'], div[role='dialog']"
-            )
-            
-            if cep_modal:
-                self.logger.debug("Modal de CEP detectado")
-                
-                cep_input = await page.query_selector(
-                    "input[placeholder*='CEP'], input[type='text'][maxlength='9'], input[name*='cep']"
-                )
-                
-                if cep_input:
-                    await cep_input.clear()
-                    await cep_input.type(cep, delay=100)
-                    await page.wait_for_timeout(500)
-                    
-                    confirm_btn = await page.query_selector(
-                        "button:has-text('Confirmar'), button:has-text('Buscar'), button[type='submit']"
-                    )
-                    if confirm_btn:
-                        await confirm_btn.click()
-                        await page.wait_for_timeout(2000)
-                        
-                        self.logger.info("CEP configurado via modal", cep=cep)
-                        return True
-            
-            location_btn = await page.query_selector(
-                "button[class*='location'], button[class*='cep'], button[data-testid*='location']"
-            )
-            
-            if location_btn:
-                await location_btn.click()
-                await page.wait_for_timeout(1000)
-                
-                cep_input = await page.query_selector("input[placeholder*='CEP'], input[type='text']")
-                
-                if cep_input:
-                    await cep_input.clear()
-                    await cep_input.type(cep, delay=100)
-                    await page.wait_for_timeout(500)
-                    
-                    confirm_btn = await page.query_selector(
-                        "button:has-text('Confirmar'), button:has-text('Buscar'), button[type='submit']"
-                    )
-                    if confirm_btn:
-                        await confirm_btn.click()
-                        await page.wait_for_timeout(2000)
-                        
-                        self.logger.info("CEP configurado via header", cep=cep)
-                        return True
-            
-            self.logger.warning(
-                "Não foi possível configurar CEP, continuando sem",
-                cep=cep,
-            )
             return False
             
         except Exception as e:
-            self.logger.warning(
-                "Falha ao configurar CEP",
-                cep=cep,
-                error=str(e),
-            )
+            self.logger.debug(f"Erro ao configurar CEP: {e}")
             return False
     
-    async def get_total_results(self, page: Page) -> Optional[int]:
-        """Extrai o número total de resultados da busca."""
-        try:
-            selectors = [
-                "span[class*='total']",
-                "p[class*='results']",
-                "div[class*='count']",
-            ]
-            
-            for selector in selectors:
-                elem = await page.query_selector(selector)
-                if elem:
-                    text = await elem.inner_text()
-                    if text:
-                        match = re.search(r'\d+', text.replace(".", ""))
-                        if match:
-                            return int(match.group())
-        except Exception:
-            pass
-        
-        return None
+    # Métodos para compatibilidade com a interface esperada
+    
+    async def set_location(self, page: Page, cep: str) -> bool:
+        """Compatibilidade com interface BaseScraper."""
+        return await self._try_set_cep(page, cep)
+    
+    async def extract_products(
+        self,
+        page: Page,
+        search_query: str,
+        cep: Optional[str] = None,
+    ) -> list[RawProduct]:
+        """Compatibilidade com interface BaseScraper."""
+        api_data = await self._fetch_api(page, search_query, page_num=1)
+        if api_data and not api_data.get("error"):
+            return self._parse_api_response(api_data, search_query, cep)
+        return []

@@ -1,3 +1,6 @@
+data/*.json
+data/*.json
+
 # Python
 __pycache__/
 *.py[cod]
