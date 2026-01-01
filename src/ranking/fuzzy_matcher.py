@@ -20,14 +20,9 @@ from typing import Optional
 class MatchResult:
     """Resultado de uma comparação fuzzy."""
     
-    # Flags principais
-    first_word_match: bool = False    # Primeira palavra é igual?
-    quantity_match: bool = False       # Quantidade combina?
-    
-    # Score final (0.0 a 1.0)
+    first_word_match: bool = False
+    quantity_match: bool = False
     score: float = 0.0
-    
-    # Informações extras
     query_first_word: str = ""
     title_first_word: str = ""
     query_quantity: Optional[str] = None
@@ -239,7 +234,6 @@ class FuzzyMatcher:
         text_lower = text.lower()
         
         # Padrão: número + unidade
-        # Ex: 5kg, 500g, 1L, 500ml, 12x350ml
         patterns = [
             # Pack: 12x350ml, 6x1L
             r"(\d+)\s*x\s*(\d+[.,]?\d*)\s*(kg|g|l|ml)\b",
@@ -344,5 +338,5 @@ def is_relevant(query: str, title: str) -> bool:
         
     Returns:
         True se primeira palavra combina
-    """
+"""
     return FuzzyMatcher().is_relevant(query, title)

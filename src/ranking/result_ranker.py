@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 class RankingStrategy(str, Enum):
     """Estratégias de ranking disponíveis."""
     
-    PRICE_FIRST = "price_first"           # Menor preço entre relevantes
-    RELEVANCE_FIRST = "relevance_first"   # Maior relevância primeiro
-    BALANCED = "balanced"                  # Equilíbrio 50/50
+    PRICE_FIRST = "price_first"
+    RELEVANCE_FIRST = "relevance_first"
+    BALANCED = "balanced"
 
 
 @dataclass
@@ -35,12 +35,8 @@ class RankingConfig:
     """Configuração do sistema de ranking."""
     
     strategy: RankingStrategy = RankingStrategy.PRICE_FIRST
-    
-    # Pesos para score final (usado em BALANCED)
     relevance_weight: float = 0.4
     price_weight: float = 0.6
-    
-    # Filtrar produtos não relevantes?
     filter_irrelevant: bool = True
     
     def __post_init__(self):
@@ -57,23 +53,14 @@ class RankingConfig:
 class RankedOffer:
     """Oferta com informações de ranking."""
     
-    # Oferta original
     offer: "PriceOffer"
-    
-    # Resultado do fuzzy match
     match_result: MatchResult
-    
-    # Scores
-    relevance_score: float = 0.0    # Score do fuzzy (0-1)
-    price_score: float = 0.0        # Score de preço (0-1, maior = mais barato)
-    final_score: float = 0.0        # Score combinado
-    
-    # Posição no ranking
+    relevance_score: float = 0.0
+    price_score: float = 0.0
+    final_score: float = 0.0
     rank: int = 0
-    
-    # Flags
-    is_relevant: bool = False       # Passou no filtro de relevância
-    is_best_price: bool = False     # Melhor preço entre relevantes
+    is_relevant: bool = False
+    is_best_price: bool = False
     
     @property
     def price_for_comparison(self) -> Optional[Decimal]:
@@ -108,8 +95,8 @@ class SmartSearchResult:
     
     query: str
     ranked_offers: list[RankedOffer]
-    total_found: int          # Total de produtos encontrados
-    total_relevant: int       # Total de produtos relevantes
+    total_found: int
+    total_relevant: int
     
     @property
     def best_offer(self) -> Optional[RankedOffer]:

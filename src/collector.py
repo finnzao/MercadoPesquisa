@@ -1,6 +1,7 @@
 """
 PriceCollector: Orquestrador principal do sistema.
 Coordena scrapers, pipeline e storage para coleta completa.
+Agora com suporte a ranking fuzzy integrado.
 """
 
 import asyncio
@@ -19,6 +20,12 @@ from src.core.models import (
 )
 from src.core.types import CollectionStatus, MarketID
 from src.pipeline import ProcessingPipeline
+from src.ranking import (
+    RankingStrategy,
+    RankingConfig,
+    RankedOffer,
+    SmartSearchResult,
+)
 from src.scrapers import ScraperManager
 from src.storage import StorageManager, StorageType
 
@@ -30,6 +37,7 @@ class PriceCollector(LoggerMixin):
     Responsabilidades:
     - Coordenar busca em múltiplos mercados
     - Processar produtos através do pipeline
+    - Aplicar ranking fuzzy para relevância
     - Persistir resultados
     - Gerar relatórios e comparações
     """
@@ -38,6 +46,8 @@ class PriceCollector(LoggerMixin):
         self,
         storage_type: StorageType = StorageType.SQLITE,
         data_path: Optional[Path] = None,
+        ranking_strategy: RankingStrategy = RankingStrategy.PRICE_FIRST,
+        filter_irrelevant: bool = True,
     ):
         """
         Inicializa o coletor.
@@ -45,12 +55,19 @@ class PriceCollector(LoggerMixin):
         Args:
             storage_type: Tipo de storage padrão
             data_path: Diretório para dados (None = config)
+            ranking_strategy: Estratégia de ranking (PRICE_FIRST, RELEVANCE_FIRST, BALANCED)
+            filter_irrelevant: Se True, filtra produtos não relevantes dos resultados
         """
         self.settings = get_settings()
+        self.ranking_strategy = ranking_strategy
+        self.filter_irrelevant = filter_irrelevant
         
         # Inicializa componentes
         self.scraper_manager = ScraperManager()
-        self.pipeline = ProcessingPipeline()
+        self.pipeline = ProcessingPipeline(
+            ranking_strategy=ranking_strategy,
+            filter_irrelevant=filter_irrelevant,
+        )
         self.storage = StorageManager(
             base_path=data_path or self.settings.data_path,
             default_type=storage_type,
@@ -66,6 +83,8 @@ class PriceCollector(LoggerMixin):
             "PriceCollector inicializado",
             storage_type=storage_type.value,
             data_path=str(data_path or self.settings.data_path),
+            ranking_strategy=ranking_strategy.value,
+            filter_irrelevant=filter_irrelevant,
         )
     
     async def search(
@@ -75,9 +94,10 @@ class PriceCollector(LoggerMixin):
         markets: Optional[list[str]] = None,
         max_pages: int = 1,
         save_results: bool = True,
+        apply_ranking: bool = True,
     ) -> SearchResult:
         """
-        Executa busca completa em mercados.
+        Executa busca completa em mercados com ranking fuzzy.
         
         Args:
             query: Termo de busca (ex: "arroz tipo 1 5kg")
@@ -85,15 +105,17 @@ class PriceCollector(LoggerMixin):
             markets: Lista de mercados (None = todos ativos)
             max_pages: Máximo de páginas por mercado
             save_results: Se deve salvar resultados
+            apply_ranking: Se deve aplicar ranking fuzzy (default: True)
             
         Returns:
-            SearchResult com ofertas processadas
+            SearchResult com ofertas processadas e rankeadas
         """
         self.logger.info(
             "Iniciando busca",
             query=query,
             cep=cep,
             markets=markets,
+            apply_ranking=apply_ranking,
         )
         
         # Valida CEP se fornecido
@@ -128,8 +150,12 @@ class PriceCollector(LoggerMixin):
                 raw_products=len(raw_products),
             )
             
-            # Etapa 2: Processamento pelo pipeline
-            offers = self.pipeline.process_batch(raw_products)
+            # Etapa 2: Processamento pelo pipeline COM ranking
+            offers = self.pipeline.process_batch(
+                raw_products,
+                apply_ranking=apply_ranking,
+                search_query=query,
+            )
             
             self.logger.info(
                 "Processamento concluído",
@@ -164,12 +190,58 @@ class PriceCollector(LoggerMixin):
             metadata.mark_finished()
             return SearchResult(metadata=metadata, offers=[])
     
+    async def smart_search(
+        self,
+        query: str,
+        cep: Optional[str] = None,
+        markets: Optional[list[str]] = None,
+        max_pages: int = 1,
+    ) -> SmartSearchResult:
+        """
+        Busca inteligente com ranking completo e metadados.
+        
+        Retorna SmartSearchResult com informações detalhadas de ranking,
+        incluindo scores de relevância e preço para cada oferta.
+        
+        Args:
+            query: Termo de busca
+            cep: CEP opcional
+            markets: Lista de mercados
+            max_pages: Máximo de páginas
+            
+        Returns:
+            SmartSearchResult com ranking detalhado
+        """
+        # Executa busca normal SEM ranking (vamos aplicar manualmente)
+        result = await self.search(
+            query=query,
+            cep=cep,
+            markets=markets,
+            max_pages=max_pages,
+            save_results=True,
+            apply_ranking=False,  # Vamos aplicar manualmente para ter metadados
+        )
+        
+        # Aplica ranking com metadados completos
+        ranked_offers = self.pipeline.get_ranked_offers(
+            result.offers,
+            query,
+        )
+        
+        return SmartSearchResult(
+            query=query,
+            ranked_offers=ranked_offers,
+            total_found=len(result.offers),
+            total_relevant=sum(1 for ro in ranked_offers if ro.is_relevant),
+        )
+    
     async def search_single_market(
         self,
         query: str,
         market_id: str,
         cep: Optional[str] = None,
         max_pages: int = 1,
+        apply_ranking: bool = True,
     ) -> list[PriceOffer]:
         """
         Busca em um único mercado.
@@ -179,9 +251,10 @@ class PriceCollector(LoggerMixin):
             market_id: ID do mercado
             cep: CEP opcional
             max_pages: Máximo de páginas
+            apply_ranking: Se deve aplicar ranking
             
         Returns:
-            Lista de ofertas processadas
+            Lista de ofertas processadas e rankeadas
         """
         result = await self.search(
             query=query,
@@ -189,6 +262,7 @@ class PriceCollector(LoggerMixin):
             markets=[market_id],
             max_pages=max_pages,
             save_results=False,
+            apply_ranking=apply_ranking,
         )
         return result.offers
     
@@ -196,18 +270,24 @@ class PriceCollector(LoggerMixin):
         self,
         query: str,
         cep: Optional[str] = None,
+        apply_ranking: bool = True,
     ) -> dict:
         """
-        Compara preços entre mercados.
+        Compara preços entre mercados com ranking inteligente.
         
         Args:
             query: Termo de busca
             cep: CEP opcional
+            apply_ranking: Se deve aplicar ranking fuzzy
             
         Returns:
             Dicionário com comparação detalhada
         """
-        result = await self.search(query=query, cep=cep)
+        result = await self.search(
+            query=query,
+            cep=cep,
+            apply_ranking=apply_ranking,
+        )
         
         if not result.offers:
             return {
@@ -218,10 +298,13 @@ class PriceCollector(LoggerMixin):
                 "savings": None,
             }
         
-        # Ordena por preço normalizado
+        # Obtém ofertas rankeadas com metadados
+        ranked_offers = self.pipeline.get_ranked_offers(result.offers, query)
+        
+        # Ordena por preço normalizado entre os relevantes
         sorted_offers = self.pipeline.calculator.compare_offers(result.offers)
         
-        # Melhor oferta
+        # Melhor oferta (já considera relevância se ranking aplicado)
         best = self.pipeline.calculator.find_best_offer(result.offers)
         
         # Calcula economia
@@ -240,12 +323,17 @@ class PriceCollector(LoggerMixin):
                 by_market[offer.market_id] = {
                     "market_name": offer.market_name,
                     "offers_count": 0,
+                    "relevant_count": 0,
                     "min_price": None,
                     "min_normalized": None,
                 }
             
             market_data = by_market[offer.market_id]
             market_data["offers_count"] += 1
+            
+            # Verifica relevância
+            if self.pipeline.matcher.is_relevant(query, offer.title):
+                market_data["relevant_count"] += 1
             
             if offer.price:
                 if market_data["min_price"] is None or offer.price < market_data["min_price"]:
@@ -255,12 +343,17 @@ class PriceCollector(LoggerMixin):
                 if market_data["min_normalized"] is None or offer.normalized_price < market_data["min_normalized"]:
                     market_data["min_normalized"] = float(offer.normalized_price)
         
+        # Estatísticas de relevância
+        total_relevant = sum(1 for ro in ranked_offers if ro.is_relevant)
+        
         return {
             "query": query,
             "cep": cep,
             "collected_at": result.metadata.started_at.isoformat(),
             "total_offers": len(result.offers),
             "comparable_offers": result.comparable_offers,
+            "relevant_offers": total_relevant,
+            "ranking_strategy": self.ranking_strategy.value,
             "by_market": by_market,
             "best_offer": {
                 "market": best.market_name,
@@ -269,18 +362,21 @@ class PriceCollector(LoggerMixin):
                 "normalized_price": float(best.normalized_price) if best.normalized_price else None,
                 "price_display": best.price_display,
                 "url": best.url,
+                "is_relevant": self.pipeline.matcher.is_relevant(query, best.title),
             } if best else None,
             "potential_savings": savings[:5],  # Top 5 economias
             "all_offers": [
                 {
+                    "rank": idx + 1,
                     "market": o.market_name,
                     "title": o.title,
                     "price": float(o.price),
                     "normalized_price": float(o.normalized_price) if o.normalized_price else None,
                     "price_display": o.price_display,
                     "is_comparable": o.is_comparable,
+                    "is_relevant": self.pipeline.matcher.is_relevant(query, o.title),
                 }
-                for o in sorted_offers
+                for idx, o in enumerate(sorted_offers)
             ],
         }
     
@@ -379,6 +475,20 @@ class PriceCollector(LoggerMixin):
             })
         return markets
     
+    def set_ranking_strategy(self, strategy: RankingStrategy) -> None:
+        """
+        Altera a estratégia de ranking.
+        
+        Args:
+            strategy: Nova estratégia (PRICE_FIRST, RELEVANCE_FIRST, BALANCED)
+        """
+        self.ranking_strategy = strategy
+        self.pipeline = ProcessingPipeline(
+            ranking_strategy=strategy,
+            filter_irrelevant=self.filter_irrelevant,
+        )
+        self.logger.info("Estratégia de ranking alterada", strategy=strategy.value)
+    
     async def _save_results(self, result: SearchResult) -> None:
         """Salva resultados no storage."""
         try:
@@ -416,6 +526,7 @@ async def quick_search(
     query: str,
     cep: Optional[str] = None,
     markets: Optional[list[str]] = None,
+    apply_ranking: bool = True,
 ) -> SearchResult:
     """
     Função de conveniência para busca rápida.
@@ -424,12 +535,18 @@ async def quick_search(
         query: Termo de busca
         cep: CEP opcional
         markets: Lista de mercados
+        apply_ranking: Se deve aplicar ranking fuzzy
         
     Returns:
-        SearchResult com ofertas
+        SearchResult com ofertas rankeadas
     """
     collector = PriceCollector()
-    return await collector.search(query=query, cep=cep, markets=markets)
+    return await collector.search(
+        query=query,
+        cep=cep,
+        markets=markets,
+        apply_ranking=apply_ranking,
+    )
 
 
 async def quick_compare(
@@ -444,7 +561,31 @@ async def quick_compare(
         cep: CEP opcional
         
     Returns:
-        Dicionário com comparação
+        Dicionário com comparação rankeada
     """
     collector = PriceCollector()
     return await collector.compare_prices(query=query, cep=cep)
+
+
+async def smart_search(
+    query: str,
+    cep: Optional[str] = None,
+    markets: Optional[list[str]] = None,
+) -> SmartSearchResult:
+    """
+    Função de conveniência para busca inteligente com ranking detalhado.
+    
+    Args:
+        query: Termo de busca
+        cep: CEP opcional
+        markets: Lista de mercados
+        
+    Returns:
+        SmartSearchResult com ranking detalhado
+    """
+    collector = PriceCollector()
+    return await collector.smart_search(
+        query=query,
+        cep=cep,
+        markets=markets,
+    )

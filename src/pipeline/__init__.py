@@ -1,5 +1,5 @@
 """
-Módulo de pipeline: parsing, normalização e cálculo de preços.
+Módulo de pipeline: parsing, normalização, cálculo de preços e ranking.
 """
 
 from src.pipeline.parser import ProductParser
