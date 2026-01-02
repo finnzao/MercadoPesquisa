@@ -1,0 +1,23 @@
+# Básicos
+arroz 5kg
+2x feijão 1kg
+açúcar 1kg
+óleo de soja 900ml
+sal 1kg
+
+# Laticínios
+leite integral 1L (quantidade: 12)
+manteiga 200g
+queijo mussarela 500g
+
+# Proteínas
+frango kg
+ovos (quantidade: 2)
+
+# Bebidas
+café 500g
+6x água mineral 500ml
+
+# Limpeza
+detergente 500ml
+sabão em pó 1kg
