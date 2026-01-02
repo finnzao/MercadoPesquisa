@@ -338,5 +338,5 @@ def is_relevant(query: str, title: str) -> bool:
         
     Returns:
         True se primeira palavra combina
-"""
+    """
     return FuzzyMatcher().is_relevant(query, title)
