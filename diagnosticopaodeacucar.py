@@ -9,14 +9,11 @@ async def diagnosticar_pao_de_acucar():
     
     termo = "arroz 5kg"
     
-    print("=" * 70)
     print("DIAGNÓSTICO DO PÃO DE AÇÚCAR")
-    print("=" * 70)
     
     # PARTE 1: Entendendo URL Encoding
     print("\n" + "=" * 70)
     print("PARTE 1: URL ENCODING")
-    print("=" * 70)
     
     print(f"\nTermo original: '{termo}'")
     print()
