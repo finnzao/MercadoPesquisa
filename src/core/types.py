@@ -1,7 +1,5 @@
 """
 Tipos customizados e enumerações do sistema.
-
-ATUALIZADO: Adicionado 'gbarbosa' ao MarketID
 """
 
 from enum import Enum
@@ -131,8 +129,8 @@ CEP = Annotated[
     ),
 ]
 
-# IDs de mercados suportados - ATUALIZADO com gbarbosa
-MarketID = Literal["carrefour", "atacadao", "pao_acucar", "gbarbosa", "extra"]
+# IDs de mercados suportados
+MarketID = Literal["carrefour", "atacadao", "pao_acucar", "gbarbosa", "samsclub", "redemix", "mercantil", "hiperideal", "extra"]
 
 # Preço (sempre positivo)
 Price = Annotated[float, Field(ge=0)]

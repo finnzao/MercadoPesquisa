@@ -10,13 +10,21 @@ from src.scrapers.carrefour import CarrefourScraper
 from src.scrapers.atacadao import AtacadaoScraper
 from src.scrapers.pao_acucar import PaoDeAcucarScraper
 from src.scrapers.gbarbosa import GBarbosaScraper
+from src.scrapers.samsclub import SamsClubScraper
+from src.scrapers.redemix import RedeMixScraper
+from src.scrapers.mercantil import MercantilAtacadoScraper
+from src.scrapers.hiperideal import HiperidealScraper
 
-#scrapers disponíveis
+# Scrapers disponíveis
 SCRAPER_REGISTRY: dict[str, type] = {
     "carrefour": CarrefourScraper,
     "atacadao": AtacadaoScraper,
     "pao_acucar": PaoDeAcucarScraper,
     "gbarbosa": GBarbosaScraper,
+    "samsclub": SamsClubScraper,
+    "redemix": RedeMixScraper,
+    "mercantil": MercantilAtacadoScraper,
+    "hiperideal": HiperidealScraper,
 }
 
 __all__ = [
@@ -28,5 +36,9 @@ __all__ = [
     "AtacadaoScraper",
     "PaoDeAcucarScraper",
     "GBarbosaScraper",
+    "SamsClubScraper",
+    "RedeMixScraper",
+    "MercantilAtacadoScraper",
+    "HiperidealScraper",
     "SCRAPER_REGISTRY",
 ]

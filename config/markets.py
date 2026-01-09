@@ -1,7 +1,6 @@
 """
 Configuração dos mercados suportados.
 Define URLs, seletores CSS e parâmetros de cada mercado.
-
 """
 
 from dataclasses import dataclass, field
@@ -28,10 +27,10 @@ class ScrapingMethod(str, Enum):
 @dataclass
 class MarketSelectors:
     """Seletores CSS para extração de dados."""
-    
+
     # Container de produto
     product_container: str = ""
-    
+
     # Dados do produto
     product_title: str = ""
     product_price: str = ""
@@ -40,11 +39,11 @@ class MarketSelectors:
     product_image: str = ""
     product_link: str = ""
     product_availability: str = ""
-    
+
     # Navegação
     next_page: str = ""
     total_results: str = ""
-    
+
     # CEP/Localização
     cep_input: str = ""
     cep_submit: str = ""
@@ -53,34 +52,34 @@ class MarketSelectors:
 @dataclass
 class MarketConfig:
     """Configuração completa de um mercado."""
-    
+
     id: str
     display_name: str
     base_url: str
     search_url_template: str
-    
+
     status: MarketStatus = MarketStatus.ACTIVE
     method: ScrapingMethod = ScrapingMethod.PLAYWRIGHT
-    
+
     # Seletores CSS
     selectors: MarketSelectors = field(default_factory=MarketSelectors)
-    
+
     # Rate limiting
     requests_per_minute: int = 10
-    
+
     # Parâmetros adicionais
     requires_cep: bool = False
     supports_pagination: bool = True
     max_pages: int = 5
-    
+
     def get_search_url(self, query: str, page: int = 0) -> str:
         """
         Monta URL de busca.
-        
+
         Args:
             query: Termo de busca (já codificado)
             page: Número da página (0-indexed)
-            
+
         Returns:
             URL completa de busca
         """
@@ -91,7 +90,7 @@ class MarketConfig:
         )
         return url
 
-# CONFIGURAÇÃO DO CARREFOUR
+
 CARREFOUR_SELECTORS = MarketSelectors(
     product_container='a[data-testid="search-product-card"]',
     product_title="h2",
@@ -113,7 +112,7 @@ CARREFOUR_CONFIG = MarketConfig(
     base_url="https://mercado.carrefour.com.br",
     search_url_template="{base_url}/busca/{query}?page={page}",
     status=MarketStatus.ACTIVE,
-    method=ScrapingMethod.PLAYWRIGHT,
+    method=ScrapingMethod.API,
     selectors=CARREFOUR_SELECTORS,
     requests_per_minute=10,
     requires_cep=False,
@@ -121,7 +120,6 @@ CARREFOUR_CONFIG = MarketConfig(
     max_pages=5,
 )
 
-# CONFIGURAÇÃO DO ATACADÃO
 ATACADAO_SELECTORS = MarketSelectors(
     product_container="ul.grid li article.relative",
     product_title="h3[title], h3, a[data-testid='product-link']",
@@ -143,7 +141,7 @@ ATACADAO_CONFIG = MarketConfig(
     base_url="https://www.atacadao.com.br",
     search_url_template="{base_url}/pesquisa?q={query}&page={page}",
     status=MarketStatus.ACTIVE,
-    method=ScrapingMethod.PLAYWRIGHT,
+    method=ScrapingMethod.API,
     selectors=ATACADAO_SELECTORS,
     requests_per_minute=10,
     requires_cep=False,
@@ -151,7 +149,6 @@ ATACADAO_CONFIG = MarketConfig(
     max_pages=5,
 )
 
-# CONFIGURAÇÃO DO PÃO DE AÇÚCAR
 PAO_ACUCAR_SELECTORS = MarketSelectors(
     product_container="div.CardStyled-sc-20azeh-0, div[class*='CardStyled-sc-20azeh']",
     product_title="a.Title-sc-20azeh-10, a[class*='Title-sc-20azeh'], a[class*='Title-sc']",
@@ -181,7 +178,6 @@ PAO_ACUCAR_CONFIG = MarketConfig(
     max_pages=5,
 )
 
-# CONFIGURAÇÃO DO GBARBOSA
 GBARBOSA_SELECTORS = MarketSelectors(
     product_container="",  # Não usado - API GraphQL
     product_title="",
@@ -211,6 +207,124 @@ GBARBOSA_CONFIG = MarketConfig(
     max_pages=5,
 )
 
+SAMSCLUB_SELECTORS = MarketSelectors(
+    product_container="",  # Não usado - API GraphQL
+    product_title="",
+    product_price="",
+    product_price_cents="",
+    product_unit_price="",
+    product_image="",
+    product_link="",
+    product_availability="",
+    next_page="",
+    total_results="",
+    cep_input="input[placeholder*='CEP']",
+    cep_submit="button:has-text('Confirmar')",
+)
+
+SAMSCLUB_CONFIG = MarketConfig(
+    id="samsclub",
+    display_name="Sam's Club",
+    base_url="https://www.samsclub.com.br",
+    search_url_template="{base_url}/{query}?_q={query}&map=ft",
+    status=MarketStatus.ACTIVE,
+    method=ScrapingMethod.API,  # Usa API GraphQL VTEX
+    selectors=SAMSCLUB_SELECTORS,
+    requests_per_minute=10,
+    requires_cep=False,  # CEP opcional
+    supports_pagination=True,
+    max_pages=5,
+)
+
+REDEMIX_SELECTORS = MarketSelectors(
+    product_container="div.product.product--shelf",
+    product_title="h3.product__name a",
+    product_price="span.price__best, button.buy-button[data-best-price]",
+    product_price_cents="",
+    product_unit_price="span.price__unit",
+    product_image="div.product__media img",
+    product_link="a.product__link",
+    product_availability="button.buy-button",
+    next_page="",
+    total_results="",
+    cep_input="input[placeholder*='CEP']",
+    cep_submit="button:has-text('Confirmar')",
+)
+
+REDEMIX_CONFIG = MarketConfig(
+    id="redemix",
+    display_name="Rede Mix",
+    base_url="https://www.redemix.com.br",
+    search_url_template="{base_url}/{query}",
+    status=MarketStatus.ACTIVE,
+    method=ScrapingMethod.API,  # Usa buscapagina endpoint (VTEX Legacy)
+    selectors=REDEMIX_SELECTORS,
+    requests_per_minute=10,
+    requires_cep=False,
+    supports_pagination=True,
+    max_pages=5,
+)
+
+# CONFIGURAÇÃO DO MERCANTIL ATACADO (NOVO)
+MERCANTIL_SELECTORS = MarketSelectors(
+    product_container="",  # Não usado - API GraphQL
+    product_title="",
+    product_price="",
+    product_price_cents="",
+    product_unit_price="",
+    product_image="",
+    product_link="",
+    product_availability="",
+    next_page="",
+    total_results="",
+    cep_input="input[placeholder*='CEP']",
+    cep_submit="button:has-text('Confirmar')",
+)
+
+MERCANTIL_CONFIG = MarketConfig(
+    id="mercantil",
+    display_name="Mercantil Atacado",
+    base_url="https://www.mercantilatacado.com.br",
+    search_url_template="{base_url}/{query}?_q={query}&map=ft",
+    status=MarketStatus.ACTIVE,
+    method=ScrapingMethod.API, 
+    selectors=MERCANTIL_SELECTORS,
+    requests_per_minute=10,
+    requires_cep=False,
+    supports_pagination=True,
+    max_pages=5,
+)
+
+# CONFIGURAÇÃO DO HIPERIDEAL
+HIPERIDEAL_SELECTORS = MarketSelectors(
+    product_container="",  # Não usado - API GraphQL
+    product_title="",
+    product_price="",
+    product_price_cents="",
+    product_unit_price="",
+    product_image="",
+    product_link="",
+    product_availability="",
+    next_page="",
+    total_results="",
+    cep_input="input[placeholder*='CEP']",
+    cep_submit="button:has-text('Confirmar')",
+)
+
+HIPERIDEAL_CONFIG = MarketConfig(
+    id="hiperideal",
+    display_name="Hiperideal",
+    base_url="https://www.hiperideal.com.br",
+    search_url_template="{base_url}/{query}?_q={query}&map=ft",
+    status=MarketStatus.ACTIVE,
+    method=ScrapingMethod.API,  # Usa API GraphQL VTEX IO
+    selectors=HIPERIDEAL_SELECTORS,
+    requests_per_minute=10,
+    requires_cep=False,
+    supports_pagination=True,
+    max_pages=5,
+)
+
 # CONFIGURAÇÃO DO EXTRA
 EXTRA_SELECTORS = MarketSelectors(
     product_container="div[class*='product-card']",
@@ -232,7 +346,7 @@ EXTRA_CONFIG = MarketConfig(
     display_name="Extra",
     base_url="https://www.extra.com.br",
     search_url_template="{base_url}/busca/{query}",
-    status=MarketStatus.DEPRECATED,  # E-commerce Extra foi descontinuado
+    status=MarketStatus.DEPRECATED, 
     method=ScrapingMethod.PLAYWRIGHT,
     selectors=EXTRA_SELECTORS,
     requests_per_minute=10,
@@ -241,12 +355,16 @@ EXTRA_CONFIG = MarketConfig(
     max_pages=1,
 )
 
-# REGISTRO DE MERCADOS
+# REGISTRO DE MERCADOS - ATUALIZADO com samsclub, redemix, mercantil e hiperideal
 MARKETS_CONFIG: dict[str, MarketConfig] = {
     "carrefour": CARREFOUR_CONFIG,
     "atacadao": ATACADAO_CONFIG,
     "pao_acucar": PAO_ACUCAR_CONFIG,
-    "gbarbosa": GBARBOSA_CONFIG,  # NOVO
+    "gbarbosa": GBARBOSA_CONFIG,
+    "samsclub": SAMSCLUB_CONFIG,
+    "redemix": REDEMIX_CONFIG,
+    "mercantil": MERCANTIL_CONFIG,
+    "hiperideal": HIPERIDEAL_CONFIG,
     "extra": EXTRA_CONFIG,
 }
 
@@ -254,13 +372,13 @@ MARKETS_CONFIG: dict[str, MarketConfig] = {
 def get_market_config(market_id: str) -> MarketConfig:
     """
     Retorna configuração de um mercado.
-    
+
     Args:
         market_id: ID do mercado
-        
+
     Returns:
         Configuração do mercado
-        
+
     Raises:
         ValueError: Se mercado não encontrado
     """
@@ -272,7 +390,7 @@ def get_market_config(market_id: str) -> MarketConfig:
 def get_active_markets() -> list[MarketConfig]:
     """
     Retorna lista de mercados ativos.
-    
+
     Returns:
         Lista de configurações de mercados ativos
     """
