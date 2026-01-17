@@ -26,7 +26,7 @@ from config.markets import get_active_markets, MARKETS_CONFIG
 
 from src.core.models import PriceOffer, SearchResult, CollectionMetadata
 from src.pipeline import ProcessingPipeline
-from src.ranking import OfferRanker
+from src.ranking import ResultRanker
 from src.scrapers import ScraperManager
 from src.services.cache_service import CacheService, RateLimiter, get_cache_service, get_rate_limiter
 
@@ -186,7 +186,7 @@ class SearchService(LoggerMixin):
         # Componentes
         self.scraper_manager = ScraperManager()
         self.pipeline = ProcessingPipeline()
-        self.ranker = OfferRanker()
+        self.ranker = ResultRanker()
         
         # Cache e rate limiting (lazy init)
         self._cache: Optional[CacheService] = None

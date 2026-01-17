@@ -26,7 +26,7 @@ from src.services import SearchRequest
 router = APIRouter()
 
 
-# ==================== SCHEMAS ====================
+# SCHEMAS
 
 class SearchQueryParams(BaseModel):
     """Parâmetros de busca via query string."""
@@ -67,7 +67,7 @@ class CompareResult(BaseModel):
     potential_savings: list[dict]
 
 
-# ==================== ENDPOINTS ====================
+# ENDPOINTS
 
 @router.get(
     "",

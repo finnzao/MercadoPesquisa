@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from config.settings import get_settings
 from config.markets import MARKETS_CONFIG
-from src.core.models import MarketStatus
+from config.markets import MarketStatus
 from src.api.deps import SearchServiceDep, SettingsDep
 
 router = APIRouter()

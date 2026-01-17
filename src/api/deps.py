@@ -22,7 +22,7 @@ from src.services import (
 )
 
 
-# ==================== SETTINGS ====================
+# SETTINGS
 
 def get_settings_dep() -> Settings:
     """Dependência para obter configurações."""
@@ -32,7 +32,7 @@ def get_settings_dep() -> Settings:
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 
-# ==================== SERVIÇOS ====================
+# SERVIÇOS
 
 async def get_search_service_dep() -> SearchService:
     """Dependência para obter SearchService."""
@@ -54,7 +54,7 @@ CacheServiceDep = Annotated[CacheService, Depends(get_cache_service_dep)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter_dep)]
 
 
-# ==================== RATE LIMITING ====================
+# RATE LIMITING
 
 async def check_rate_limit(
     request: Request,
@@ -121,7 +121,7 @@ async def check_rate_limit(
 RateLimitDep = Depends(check_rate_limit)
 
 
-# ==================== IDENTIFICAÇÃO DE USUÁRIO ====================
+# IDENTIFICAÇÃO DE USUÁRIO
 
 async def get_user_id(
     x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
@@ -140,7 +140,7 @@ async def get_user_id(
 UserIdDep = Annotated[Optional[str], Depends(get_user_id)]
 
 
-# ==================== VALIDADORES ====================
+# VALIDADORES
 
 def validate_query(query: str) -> str:
     """

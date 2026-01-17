@@ -32,7 +32,6 @@ async def lifespan(app: FastAPI):
     - Startup: Conecta ao Redis, inicializa serviços
     - Shutdown: Fecha conexões, limpa recursos
     """
-    # ==================== STARTUP ====================
     logger.info(
         "Iniciando aplicação",
         environment=settings.env,
@@ -57,7 +56,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # ==================== SHUTDOWN ====================
+    # SHUTDOWN
     logger.info("Encerrando aplicação")
     
     # Desconecta Redis
@@ -112,7 +111,7 @@ API para rastreamento e comparação de preços em supermercados.
         lifespan=lifespan,
     )
     
-    # ==================== MIDDLEWARES ====================
+    # MIDDLEWARES
     
     # CORS
     app.add_middleware(
@@ -129,7 +128,7 @@ API para rastreamento e comparação de preços em supermercados.
     # Compressão GZip
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     
-    # ==================== EXCEPTION HANDLERS ====================
+    # EXCEPTION HANDLERS
     
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -172,7 +171,7 @@ API para rastreamento e comparação de preços em supermercados.
             },
         )
     
-    # ==================== ROTAS ====================
+    # ROTAS
     
     # API v1
     app.include_router(api_router, prefix=settings.api_prefix)
