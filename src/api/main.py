@@ -82,28 +82,6 @@ def create_app() -> FastAPI:
         version=settings.api_version,
         description="""
 # Price Tracker API
-
-API para rastreamento e comparação de preços em supermercados.
-
-## Funcionalidades
-
-- 🔍 **Busca de produtos** em múltiplos mercados simultaneamente
-- 💰 **Comparação de preços** com normalização (R$/kg, R$/L)
-- 📊 **Ranking inteligente** por relevância e preço
-- 🛒 **Lista de compras** com otimização de gastos
-- ⚡ **Cache Redis** para respostas rápidas
-- 🔒 **Rate limiting** por usuário
-
-## Mercados Suportados
-
-- Carrefour
-- Atacadão
-- Pão de Açúcar
-- GBarbosa
-- Sam's Club
-- Rede Mix
-- Mercantil Atacado
-- Hiperideal
         """,
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
