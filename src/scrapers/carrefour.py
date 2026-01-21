@@ -1,6 +1,5 @@
 """
 Carrefour Scraper - API Remix/VTEX.
-Caminho: /src/scrapers/carrefour_api.py
 """
 
 import json
@@ -111,8 +110,14 @@ class CarrefourScraper(BaseAPIScraper):
     PRODUCTS_PER_PAGE = 20
     BASE_URL = "https://mercado.carrefour.com.br"
     
-    def __init__(self):
-        config = MARKETS_CONFIG.get("carrefour")
+    def __init__(self, config=None):
+        """
+        Inicializa o scraper.
+        
+        Args:
+            config: Configuração do mercado (opcional, usa padrão se não fornecido)
+        """
+        config = config or MARKETS_CONFIG.get("carrefour")
         super().__init__(config)
     
     def _build_request(self, query: str, page: int) -> Dict[str, Any]:

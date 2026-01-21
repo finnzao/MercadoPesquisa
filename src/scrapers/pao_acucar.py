@@ -39,7 +39,12 @@ class PaoDeAcucarScraper(LoggerMixin):
     PRODUCTS_PER_PAGE = 16
 
     def __init__(self, config: Optional[MarketConfig] = None):
-        """Inicializa o scraper."""
+        """
+        Inicializa o scraper.
+        
+        Args:
+            config: Configuração do mercado (opcional, usa padrão se não fornecido)
+        """
         self.config = config or PAO_ACUCAR_CONFIG
         self._store_id = self.DEFAULT_STORE_ID
 
@@ -502,3 +507,9 @@ class PaoDeAcucarScraper(LoggerMixin):
         if api_data and not api_data.get("error"):
             return self._parse_api_response(api_data, search_query, cep)
         return []
+
+
+async def search_pao_acucar(query: str, cep: Optional[str] = None, max_pages: int = 1):
+    """Função de conveniência."""
+    scraper = PaoDeAcucarScraper()
+    return await scraper.search(query, cep, max_pages)

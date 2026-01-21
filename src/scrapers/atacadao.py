@@ -1,6 +1,5 @@
 """
 Atacadão Scraper - API GraphQL VTEX.
-Caminho: /src/scrapers/atacadao_api.py
 """
 
 import base64
@@ -44,8 +43,14 @@ class AtacadaoScraper(BaseAPIScraper):
     BASE_URL = "https://www.atacadao.com.br"
     API_ENDPOINT = "/api/graphql"
     
-    def __init__(self):
-        config = MARKETS_CONFIG.get("atacadao")
+    def __init__(self, config=None):
+        """
+        Inicializa o scraper.
+        
+        Args:
+            config: Configuração do mercado (opcional, usa padrão se não fornecido)
+        """
+        config = config or MARKETS_CONFIG.get("atacadao")
         super().__init__(config)
         self._cep: Optional[str] = None
     
