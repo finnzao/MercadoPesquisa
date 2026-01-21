@@ -111,9 +111,8 @@ class CarrefourScraper(BaseAPIScraper):
     PRODUCTS_PER_PAGE = 20
     BASE_URL = "https://mercado.carrefour.com.br"
     
-    def __init__(self):
-        config = MARKETS_CONFIG.get("carrefour")
-        super().__init__(config)
+    def __init__(self, config=None):
+        super().__init__(config or MARKETS_CONFIG.get("carrefour"))
     
     def _build_request(self, query: str, page: int) -> Dict[str, Any]:
         encoded = quote(query)

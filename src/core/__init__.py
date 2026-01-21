@@ -1,59 +1,16 @@
 """
-Módulo core: modelos de dados, exceções, tipos e constantes.
+Core module - HTTP client e Browser pool.
+Caminho: /src/core/__init__.py
 """
 
-from src.core.models import (
-    RawProduct,
-    NormalizedProduct,
-    PriceOffer,
-    SearchResult,
-    CollectionMetadata,
-)
-from src.core.exceptions import (
-    PriceCollectorError,
-    ScraperError,
-    ParsingError,
-    NormalizationError,
-    StorageError,
-    RateLimitError,
-    BlockedError,
-    NetworkError,
-)
-from src.core.types import (
-    Unit,
-    Availability,
-    MarketID,
-    CEP,
-)
-from src.core.constants import (
-    UNIT_CONVERSIONS,
-    QUANTITY_PATTERNS,
-    PRICE_PATTERNS,
-)
+from src.core.http_client import http_client, get_http_client, HTTPClientPool
+from src.core.browser_pool import browser_pool, get_browser_pool, BrowserPool
 
 __all__ = [
-    # Models
-    "RawProduct",
-    "NormalizedProduct",
-    "PriceOffer",
-    "SearchResult",
-    "CollectionMetadata",
-    # Exceptions
-    "PriceCollectorError",
-    "ScraperError",
-    "ParsingError",
-    "NormalizationError",
-    "StorageError",
-    "RateLimitError",
-    "BlockedError",
-    "NetworkError",
-    # Types
-    "Unit",
-    "Availability",
-    "MarketID",
-    "CEP",
-    # Constants
-    "UNIT_CONVERSIONS",
-    "QUANTITY_PATTERNS",
-    "PRICE_PATTERNS",
+    "http_client",
+    "get_http_client", 
+    "HTTPClientPool",
+    "browser_pool",
+    "get_browser_pool",
+    "BrowserPool",
 ]

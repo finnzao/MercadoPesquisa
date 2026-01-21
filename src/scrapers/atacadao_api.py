@@ -44,9 +44,8 @@ class AtacadaoScraper(BaseAPIScraper):
     BASE_URL = "https://www.atacadao.com.br"
     API_ENDPOINT = "/api/graphql"
     
-    def __init__(self):
-        config = MARKETS_CONFIG.get("atacadao")
-        super().__init__(config)
+    def __init__(self, config=None):
+        super().__init__(config or MARKETS_CONFIG.get("atacadao"))
         self._cep: Optional[str] = None
     
     async def search(self, query: str, cep: Optional[str] = None, max_pages: int = 1):
