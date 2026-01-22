@@ -1,8 +1,11 @@
 """
-Carrefour Scraper - API Remix/VTEX.
+Carrefour Scraper - API Remix/VTEX
 """
 
 import json
+import brotli  # pip install brotli
+import gzip
+import zlib
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -101,22 +104,65 @@ class RemixDataParser:
         return product
 
 
+def decompress_response(content: bytes, content_encoding: str = None) -> str:
+    """
+    Descomprime a resposta baseado no encoding ou tenta múltiplos métodos.
+    
+    Args:
+        content: Bytes da resposta
+        content_encoding: Header Content-Encoding da resposta
+        
+    Returns:
+        String decodificada
+    """
+    # Se já é string válida, retorna
+    try:
+        return content.decode('utf-8')
+    except UnicodeDecodeError:
+        pass
+    
+    # Tenta Brotli
+    try:
+        decompressed = brotli.decompress(content)
+        return decompressed.decode('utf-8')
+    except Exception:
+        pass
+    
+    # Tenta gzip
+    try:
+        decompressed = gzip.decompress(content)
+        return decompressed.decode('utf-8')
+    except Exception:
+        pass
+    
+    # Tenta zlib (deflate)
+    try:
+        decompressed = zlib.decompress(content)
+        return decompressed.decode('utf-8')
+    except Exception:
+        pass
+    
+    # Tenta zlib com wbits negativo
+    try:
+        decompressed = zlib.decompress(content, -zlib.MAX_WBITS)
+        return decompressed.decode('utf-8')
+    except Exception:
+        pass
+    
+    # Última tentativa: decodificar com errors='replace'
+    return content.decode('utf-8', errors='replace')
+
+
 class CarrefourScraper(BaseAPIScraper):
     """
     Scraper Carrefour via API .data (Remix).
-    Sessão estável, sem rotação de UA.
+    VERSÃO CORRIGIDA - Trata respostas comprimidas adequadamente.
     """
     
     PRODUCTS_PER_PAGE = 20
     BASE_URL = "https://mercado.carrefour.com.br"
     
     def __init__(self, config=None):
-        """
-        Inicializa o scraper.
-        
-        Args:
-            config: Configuração do mercado (opcional, usa padrão se não fornecido)
-        """
         config = config or MARKETS_CONFIG.get("carrefour")
         super().__init__(config)
     
@@ -132,11 +178,125 @@ class CarrefourScraper(BaseAPIScraper):
             "url": url,
             "method": "GET",
             "params": params,
-            "headers": {"Accept": "text/x-script"},
+            "headers": {
+                "Accept": "text/x-script, application/json, */*",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Referer": "https://mercado.carrefour.com.br/",
+            },
         }
+    
+    async def search(self, query: str, cep: Optional[str] = None, max_pages: int = 1):
+        """
+        Sobrescreve o método search para tratar respostas comprimidas.
+        """
+        from dataclasses import dataclass, field
+        from datetime import datetime
+        from src.core.types import CollectionStatus
+        from src.scrapers.base_pooled import ScraperResult
+        from src.core.http_client import get_http_client
+        import asyncio
+        import random
+        
+        result = ScraperResult(
+            market_id=self.market_id,
+            search_query=query,
+            status=CollectionStatus.FAILED,
+        )
+        
+        self.logger.info("Iniciando busca API", market=self.market_id, query=query)
+        
+        try:
+            http = await get_http_client()
+            all_products = []
+            total_available = None
+            
+            for page_num in range(max_pages):
+                req = self._build_request(query, page_num)
+                
+                # Executa requisição
+                response = await http.get(
+                    req["url"],
+                    market_id=self.market_id,
+                    headers=req.get("headers"),
+                    params=req.get("params"),
+                )
+                
+                # CORREÇÃO: Trata resposta que pode estar comprimida
+                try:
+                    # Primeiro tenta o método normal
+                    data = response.json()
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    self.logger.debug(
+                        "Resposta não é JSON direto, tentando descomprimir",
+                        error=str(e)[:100]
+                    )
+                    
+                    # Obtém o content-encoding do header
+                    content_encoding = response.headers.get('content-encoding', '')
+                    
+                    # Tenta descomprimir
+                    text_content = decompress_response(response.content, content_encoding)
+                    
+                    # Agora tenta parsear o JSON
+                    try:
+                        data = json.loads(text_content)
+                    except json.JSONDecodeError as je:
+                        self.logger.error(
+                            "Falha ao parsear JSON após descompressão",
+                            error=str(je)[:200],
+                            content_preview=text_content[:200] if text_content else "empty"
+                        )
+                        result.status = CollectionStatus.FAILED
+                        result.error_message = f"JSON inválido: {str(je)[:100]}"
+                        break
+                
+                products, total = self._parse_response(data, query, cep, page_num)
+                
+                if total_available is None:
+                    total_available = total
+                
+                if not products:
+                    if page_num == 0:
+                        result.status = CollectionStatus.NO_RESULTS
+                    break
+                
+                all_products.extend(products)
+                result.pages_scraped += 1
+                
+                self.logger.info("Página coletada", page=page_num + 1, products=len(products))
+                
+                # Verifica se há mais páginas
+                if total_available and (page_num + 1) * self.PRODUCTS_PER_PAGE >= total_available:
+                    break
+                
+                # Delay entre páginas
+                if page_num < max_pages - 1:
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+            
+            result.products = all_products
+            result.status = CollectionStatus.SUCCESS if all_products else CollectionStatus.NO_RESULTS
+            
+        except Exception as e:
+            result.status = CollectionStatus.FAILED
+            result.error_message = str(e)
+            self.logger.error("Erro na busca", error=str(e), exc_info=True)
+        
+        finally:
+            result.mark_finished()
+        
+        self.logger.info(
+            "Busca finalizada",
+            market=self.market_id,
+            status=result.status.value,
+            products=result.products_count,
+            duration=f"{result.duration_seconds:.2f}s" if result.duration_seconds else "N/A",
+        )
+        
+        return result
     
     def _parse_response(self, data: Any, query: str, cep: Optional[str], page: int) -> tuple[List[RawProduct], int]:
         if not isinstance(data, list):
+            self.logger.warning("Resposta não é uma lista", type=type(data).__name__)
             return [], 0
         
         parser = RemixDataParser(data)

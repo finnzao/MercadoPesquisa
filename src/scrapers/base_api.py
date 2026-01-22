@@ -1,10 +1,15 @@
 """
-Base para scrapers que usam API HTTP.
+Base para scrapers que usam API HTTP - VERSÃO CORRIGIDA
+Trata adequadamente respostas comprimidas (Brotli, gzip, deflate).
+
 Usa: Carrefour, Atacadão, e outros com API REST/GraphQL.
 Caminho: /src/scrapers/base_api.py
 """
 
 import asyncio
+import json
+import gzip
+import zlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,10 +27,104 @@ from src.core.types import CollectionStatus
 from src.scrapers.base_pooled import ScraperResult
 
 
+# Tenta importar brotli (opcional)
+try:
+    import brotli
+    BROTLI_AVAILABLE = True
+except ImportError:
+    BROTLI_AVAILABLE = False
+
+
+def safe_decode_response(response: httpx.Response) -> Any:
+    """
+    Decodifica a resposta HTTP de forma segura, tratando diferentes encodings.
+    
+    Args:
+        response: Objeto Response do httpx
+        
+    Returns:
+        Dados JSON parseados
+        
+    Raises:
+        json.JSONDecodeError: Se não conseguir parsear o JSON
+        UnicodeDecodeError: Se não conseguir decodificar o texto
+    """
+    content = response.content
+    content_encoding = response.headers.get('content-encoding', '').lower()
+    
+    # Primeiro, tenta o método padrão do httpx
+    try:
+        return response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    
+    # Se o conteúdo está vazio, retorna None
+    if not content:
+        return None
+    
+    # Tenta decodificar o conteúdo de diferentes formas
+    text_content = None
+    
+    # 1. Tenta Brotli (se disponível e parece ser br)
+    if BROTLI_AVAILABLE and (content_encoding == 'br' or content[:2] in [b'\x1b\x37', b'\x1b\x36']):
+        try:
+            decompressed = brotli.decompress(content)
+            text_content = decompressed.decode('utf-8')
+        except Exception:
+            pass
+    
+    # 2. Tenta gzip
+    if text_content is None and (content_encoding == 'gzip' or content[:2] == b'\x1f\x8b'):
+        try:
+            decompressed = gzip.decompress(content)
+            text_content = decompressed.decode('utf-8')
+        except Exception:
+            pass
+    
+    # 3. Tenta zlib (deflate)
+    if text_content is None and content_encoding == 'deflate':
+        try:
+            decompressed = zlib.decompress(content)
+            text_content = decompressed.decode('utf-8')
+        except Exception:
+            pass
+        
+        # Tenta zlib com wbits negativo (raw deflate)
+        if text_content is None:
+            try:
+                decompressed = zlib.decompress(content, -zlib.MAX_WBITS)
+                text_content = decompressed.decode('utf-8')
+            except Exception:
+                pass
+    
+    # 4. Tenta decodificação direta
+    if text_content is None:
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                text_content = content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+    
+    # 5. Fallback: decodifica com replace
+    if text_content is None:
+        text_content = content.decode('utf-8', errors='replace')
+    
+    # Agora tenta parsear o JSON
+    if text_content:
+        # Remove possíveis BOM ou caracteres inválidos no início
+        text_content = text_content.lstrip('\ufeff\x00')
+        return json.loads(text_content)
+    
+    raise json.JSONDecodeError("Não foi possível decodificar a resposta", "", 0)
+
+
 class BaseAPIScraper(ABC, LoggerMixin):
     """
     Base para scrapers via API HTTP.
     Não usa browser - apenas requisições HTTP.
+    
+    VERSÃO CORRIGIDA - Trata respostas comprimidas adequadamente.
     """
     
     PRODUCTS_PER_PAGE = 20
@@ -98,7 +197,27 @@ class BaseAPIScraper(ABC, LoggerMixin):
                         params=req.get("params"),
                     )
                 
-                data = response.json()
+                # CORREÇÃO: Usa decodificação segura
+                try:
+                    data = safe_decode_response(response)
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    self.logger.error(
+                        "Erro ao decodificar resposta",
+                        error=str(e)[:200],
+                        content_type=response.headers.get('content-type', 'unknown'),
+                        content_encoding=response.headers.get('content-encoding', 'none'),
+                        content_length=len(response.content),
+                    )
+                    result.status = CollectionStatus.FAILED
+                    result.error_message = f"Erro de decodificação: {str(e)[:100]}"
+                    break
+                
+                if data is None:
+                    self.logger.warning("Resposta vazia da API")
+                    if page_num == 0:
+                        result.status = CollectionStatus.NO_RESULTS
+                    break
+                
                 products, total = self._parse_response(data, query, cep, page_num)
                 
                 if total_available is None:
@@ -115,7 +234,7 @@ class BaseAPIScraper(ABC, LoggerMixin):
                 self.logger.info("Página coletada", page=page_num + 1, products=len(products))
                 
                 # Verifica se há mais páginas
-                if (page_num + 1) * self.PRODUCTS_PER_PAGE >= total_available:
+                if total_available and (page_num + 1) * self.PRODUCTS_PER_PAGE >= total_available:
                     break
                 
                 # Delay entre páginas
