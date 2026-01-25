@@ -1,41 +1,110 @@
+# src/services/cache_service.py
 """
-Serviço de Cache usando Redis.
+Serviço de Cache usando Redis + Cache em Memória (L1).
 Gerencia cache de resultados de busca e rate limiting.
+
+- Cache L1 em memória (LRU) para respostas frequentes
+- Cache L2 no Redis para persistência
+- Reduz latência de ~5ms (Redis) para ~0.1ms (memória)
 """
 
 import asyncio
 import hashlib
 import json
-from datetime import datetime
-from typing import Any, Optional, TypeVar, Generic
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Any, Optional
 
 import redis.asyncio as redis
-from pydantic import BaseModel
 
-from config.settings import get_settings
 from config.logging_config import LoggerMixin
+from config.settings import get_settings
 
-T = TypeVar("T")
 
+# CACHE L1 - MEMÓRIA (LRU)
 
 @dataclass
 class CacheEntry:
-    """Entrada do cache com metadados."""
+    """Entrada de cache com TTL."""
     data: Any
-    created_at: datetime
-    ttl_seconds: int
+    expires_at: float
     hits: int = 0
 
+
+class LRUMemoryCache:
+    """
+    Cache LRU em memória com TTL.
+    
+    - Acesso em ~0.1ms
+    - Evita ida ao Redis para queries frequentes
+    - Limite de tamanho para não estourar memória
+    """
+    
+    def __init__(self, max_size: int = 1000, default_ttl: int = 60):
+        self.max_size = max_size
+        self.default_ttl = default_ttl
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._lock = asyncio.Lock()
+        self._hits = 0
+        self._misses = 0
+    
+    async def get(self, key: str) -> Optional[Any]:
+        async with self._lock:
+            if key not in self._cache:
+                self._misses += 1
+                return None
+            
+            entry = self._cache[key]
+            
+            # Verifica expiração
+            if time.time() > entry.expires_at:
+                del self._cache[key]
+                self._misses += 1
+                return None
+            
+            # Move para o final (LRU)
+            self._cache.move_to_end(key)
+            entry.hits += 1
+            self._hits += 1
+            return entry.data
+    
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
+        async with self._lock:
+            ttl = ttl or self.default_ttl
+            expires_at = time.time() + ttl
+            
+            # Remove mais antigo se cheio
+            while len(self._cache) >= self.max_size:
+                self._cache.popitem(last=False)
+            
+            self._cache[key] = CacheEntry(data=value, expires_at=expires_at)
+    
+    async def delete(self, key: str):
+        async with self._lock:
+            self._cache.pop(key, None)
+    
+    async def clear(self):
+        async with self._lock:
+            self._cache.clear()
+    
+    def stats(self) -> dict:
+        total = self._hits + self._misses
+        hit_rate = (self._hits / total * 100) if total > 0 else 0
+        return {
+            "size": len(self._cache),
+            "max_size": self.max_size,
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate_percent": round(hit_rate, 2),
+        }
+
+
+# REDIS CLIENT (L2)
 
 class RedisClient(LoggerMixin):
     """
     Cliente Redis singleton para cache e rate limiting.
-    
-    Uso:
-        client = await RedisClient.get_instance()
-        await client.set("key", "value", ttl=300)
-        value = await client.get("key")
     """
     
     _instance: Optional["RedisClient"] = None
@@ -77,7 +146,7 @@ class RedisClient(LoggerMixin):
             
         except Exception as e:
             self.logger.warning(
-                "Redis não disponível, cache desabilitado",
+                "Redis não disponível, usando apenas cache L1",
                 error=str(e),
             )
             self._connected = False
@@ -104,7 +173,7 @@ class RedisClient(LoggerMixin):
             full_key = f"{self.settings.cache_prefix}{key}"
             return await self._redis.get(full_key)
         except Exception as e:
-            self.logger.debug("Erro ao ler cache", key=key, error=str(e))
+            self.logger.debug("Erro ao ler cache Redis", key=key, error=str(e))
             return None
     
     async def set(
@@ -123,7 +192,7 @@ class RedisClient(LoggerMixin):
             await self._redis.setex(full_key, ttl, value)
             return True
         except Exception as e:
-            self.logger.debug("Erro ao escrever cache", key=key, error=str(e))
+            self.logger.debug("Erro ao escrever cache Redis", key=key, error=str(e))
             return False
     
     async def delete(self, key: str) -> bool:
@@ -136,7 +205,7 @@ class RedisClient(LoggerMixin):
             await self._redis.delete(full_key)
             return True
         except Exception as e:
-            self.logger.debug("Erro ao deletar cache", key=key, error=str(e))
+            self.logger.debug("Erro ao deletar cache Redis", key=key, error=str(e))
             return False
     
     async def exists(self, key: str) -> bool:
@@ -179,23 +248,44 @@ class RedisClient(LoggerMixin):
             return -1
 
 
+# CACHE SERVICE (L1 + L2)
+
 class CacheService(LoggerMixin):
     """
     Serviço de cache de alto nível para resultados de busca.
     
-    Gera chaves de cache baseadas nos parâmetros de busca
-    e gerencia serialização/deserialização.
+    ARQUITETURA MULTI-LAYER:
+    - L1 (Memória): Cache LRU com TTL curto (60s)
+    - L2 (Redis): Cache persistente com TTL maior (300s)
+    
+    FLUXO DE LEITURA:
+    1. Tenta L1 (memória) - ~0.1ms
+    2. Se miss, tenta L2 (Redis) - ~1-5ms
+    3. Se encontrar em L2, popula L1
+    
+    FLUXO DE ESCRITA:
+    1. Escreve em L1 (memória)
+    2. Escreve em L2 (Redis) em background
     """
+    
+    # Configurações de TTL
+    L1_TTL_SECONDS = 60    # 1 minuto em memória
+    L2_TTL_SECONDS = 300   # 5 minutos no Redis
+    L1_MAX_SIZE = 1000     # Máximo de entradas em memória
     
     def __init__(self):
         self.settings = get_settings()
-        self._client: Optional[RedisClient] = None
+        self._redis_client: Optional[RedisClient] = None
+        self._l1_cache = LRUMemoryCache(
+            max_size=self.L1_MAX_SIZE,
+            default_ttl=self.L1_TTL_SECONDS,
+        )
     
-    async def _get_client(self) -> RedisClient:
+    async def _get_redis(self) -> RedisClient:
         """Obtém cliente Redis."""
-        if self._client is None:
-            self._client = await RedisClient.get_instance()
-        return self._client
+        if self._redis_client is None:
+            self._redis_client = await RedisClient.get_instance()
+        return self._redis_client
     
     def _generate_cache_key(
         self,
@@ -205,14 +295,6 @@ class CacheService(LoggerMixin):
     ) -> str:
         """
         Gera chave de cache única baseada nos parâmetros.
-        
-        Args:
-            query: Termo de busca
-            cep: CEP (opcional)
-            markets: Lista de mercados (opcional)
-            
-        Returns:
-            Hash MD5 dos parâmetros
         """
         # Normaliza parâmetros
         query_normalized = query.lower().strip()
@@ -222,8 +304,8 @@ class CacheService(LoggerMixin):
         # Cria string para hash
         cache_string = f"search:{query_normalized}:{cep_normalized}:{markets_normalized}"
         
-        # Gera hash MD5
-        return hashlib.md5(cache_string.encode()).hexdigest()
+        # Gera hash MD5 (curto para economizar memória)
+        return hashlib.md5(cache_string.encode()).hexdigest()[:16]
     
     async def get_search_result(
         self,
@@ -232,37 +314,34 @@ class CacheService(LoggerMixin):
         markets: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """
-        Obtém resultado de busca do cache.
-        
-        Args:
-            query: Termo de busca
-            cep: CEP
-            markets: Lista de mercados
-            
-        Returns:
-            Resultado cacheado ou None
+        Obtém resultado de busca do cache (L1 -> L2).
         """
         if not self.settings.cache_enabled:
             return None
         
-        client = await self._get_client()
-        if not client.is_connected:
-            return None
-        
         cache_key = self._generate_cache_key(query, cep, markets)
         
-        cached = await client.get(f"search:{cache_key}")
+        # 1. Tenta L1 (memória)
+        result = await self._l1_cache.get(cache_key)
+        if result is not None:
+            self.logger.debug("Cache L1 hit", query=query, key=cache_key[:8])
+            return result
+        
+        # 2. Tenta L2 (Redis)
+        redis_client = await self._get_redis()
+        if not redis_client.is_connected:
+            return None
+        
+        cached = await redis_client.get(f"search:{cache_key}")
         if cached:
             try:
                 result = json.loads(cached)
-                self.logger.debug(
-                    "Cache hit",
-                    query=query,
-                    key=cache_key[:8],
-                )
+                # Popula L1 para próximas consultas
+                await self._l1_cache.set(cache_key, result, self.L1_TTL_SECONDS)
+                self.logger.debug("Cache L2 hit -> L1", query=query, key=cache_key[:8])
                 return result
             except json.JSONDecodeError:
-                await client.delete(f"search:{cache_key}")
+                await redis_client.delete(f"search:{cache_key}")
         
         return None
     
@@ -275,48 +354,47 @@ class CacheService(LoggerMixin):
         ttl: Optional[int] = None,
     ) -> bool:
         """
-        Armazena resultado de busca no cache.
-        
-        Args:
-            query: Termo de busca
-            result: Resultado a cachear
-            cep: CEP
-            markets: Lista de mercados
-            ttl: TTL customizado
-            
-        Returns:
-            True se cacheou com sucesso
+        Armazena resultado de busca no cache (L1 + L2).
         """
         if not self.settings.cache_enabled:
             return False
         
-        client = await self._get_client()
-        if not client.is_connected:
-            return False
-        
         cache_key = self._generate_cache_key(query, cep, markets)
+        l2_ttl = ttl or self.L2_TTL_SECONDS
+        
+        # 1. Salva em L1 (memória) - TTL menor
+        await self._l1_cache.set(
+            cache_key,
+            result,
+            min(self.L1_TTL_SECONDS, l2_ttl),
+        )
+        
+        # 2. Salva em L2 (Redis)
+        redis_client = await self._get_redis()
+        if not redis_client.is_connected:
+            return True  # L1 funcionou
         
         try:
             cached_data = json.dumps(result, default=str)
-            success = await client.set(
+            success = await redis_client.set(
                 f"search:{cache_key}",
                 cached_data,
-                ttl=ttl or self.settings.cache_ttl_seconds,
+                ttl=l2_ttl,
             )
             
             if success:
                 self.logger.debug(
-                    "Cache set",
+                    "Cache set L1+L2",
                     query=query,
                     key=cache_key[:8],
-                    ttl=ttl or self.settings.cache_ttl_seconds,
+                    l2_ttl=l2_ttl,
                 )
             
             return success
             
         except Exception as e:
-            self.logger.warning("Erro ao cachear resultado", error=str(e))
-            return False
+            self.logger.warning("Erro ao cachear em L2", error=str(e))
+            return True  # L1 funcionou
     
     async def invalidate_search(
         self,
@@ -325,24 +403,34 @@ class CacheService(LoggerMixin):
         markets: Optional[list[str]] = None,
     ) -> bool:
         """Invalida cache de uma busca específica."""
-        client = await self._get_client()
-        if not client.is_connected:
-            return False
-        
         cache_key = self._generate_cache_key(query, cep, markets)
-        return await client.delete(f"search:{cache_key}")
+        
+        # Invalida L1
+        await self._l1_cache.delete(cache_key)
+        
+        # Invalida L2
+        redis_client = await self._get_redis()
+        if redis_client.is_connected:
+            await redis_client.delete(f"search:{cache_key}")
+        
+        return True
     
     async def invalidate_market(self, market_id: str) -> int:
-        """
-        Invalida todos os caches de um mercado.
-        
-        Nota: Requer SCAN para encontrar chaves relacionadas.
-        Em produção, considere usar tags ou estrutura diferente.
-        """
-        # Implementação simplificada - em produção usar SCAN
+        """Invalida todos os caches de um mercado."""
         self.logger.info("Invalidação de mercado solicitada", market=market_id)
+        # Limpa L1 completamente (simplificado)
+        await self._l1_cache.clear()
         return 0
+    
+    def get_stats(self) -> dict:
+        """Retorna estatísticas do cache."""
+        return {
+            "l1": self._l1_cache.stats(),
+            "l2_connected": self._redis_client.is_connected if self._redis_client else False,
+        }
 
+
+# RATE LIMITER
 
 class RateLimiter(LoggerMixin):
     """
@@ -369,11 +457,6 @@ class RateLimiter(LoggerMixin):
         """
         Verifica se requisição é permitida.
         
-        Args:
-            identifier: ID único (user_id, ip, etc)
-            limit: Limite de requisições
-            window_seconds: Janela de tempo em segundos
-            
         Returns:
             Tupla (permitido, requisições_restantes, ttl_reset)
         """
@@ -424,11 +507,11 @@ class RateLimiter(LoggerMixin):
         """Verifica rate limit para um IP."""
         return await self.is_allowed(
             f"ip:{ip}",
-            self.settings.rate_limit_requests_per_minute * 2,  # IP tem limite maior
+            self.settings.rate_limit_requests_per_minute * 2,
         )
 
+# INSTÂNCIAS GLOBAIS
 
-# Instâncias globais para uso simplificado
 _cache_service: Optional[CacheService] = None
 _rate_limiter: Optional[RateLimiter] = None
 

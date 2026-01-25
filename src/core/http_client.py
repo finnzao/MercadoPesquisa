@@ -1,3 +1,4 @@
+# src/core/http_client.py
 """
 Cliente HTTP resiliente com pool de conexões por mercado.
 Gerencia sessões, rate limiting e retry automático.
@@ -23,19 +24,39 @@ class MarketSession(LoggerMixin):
         "Chrome/120.0.0.0 Safari/537.36"
     )
     
+    # Configurações otimizadas
+    CONNECT_TIMEOUT = 5.0
+    READ_TIMEOUT = 15.0
+    POOL_TIMEOUT = 10.0
+    MAX_CONNECTIONS = 20
+    MAX_KEEPALIVE = 10
+    
     def __init__(self, market_id: str, requests_per_minute: int = 10):
         self.market_id = market_id
         self.requests_per_minute = requests_per_minute
         self._client: Optional[httpx.AsyncClient] = None
         self._last_request: float = 0
         self._lock = asyncio.Lock()
+        # Semáforo para limitar concorrência por mercado
+        self._semaphore = asyncio.Semaphore(min(requests_per_minute, 10))
     
     async def _get_client(self) -> httpx.AsyncClient:
-        """Obtém ou cria cliente HTTP."""
+        """Obtém ou cria cliente HTTP com configurações otimizadas."""
         if self._client is None or self._client.is_closed:
             settings = get_settings()
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(settings.request_timeout),
+                http2=True,  # HTTP/2 para multiplexing
+                timeout=httpx.Timeout(
+                    connect=self.CONNECT_TIMEOUT,
+                    read=self.READ_TIMEOUT,
+                    write=self.READ_TIMEOUT,
+                    pool=self.POOL_TIMEOUT,
+                ),
+                limits=httpx.Limits(
+                    max_connections=self.MAX_CONNECTIONS,
+                    max_keepalive_connections=self.MAX_KEEPALIVE,
+                    keepalive_expiry=30.0,
+                ),
                 follow_redirects=True,
                 headers={
                     "User-Agent": self.DEFAULT_UA,
@@ -73,7 +94,6 @@ class MarketSession(LoggerMixin):
     
     def _add_referer(self, url: str, headers: Optional[Dict]) -> Dict:
         """Adiciona Referer ao header se não existir."""
-        # CORREÇÃO: Trata headers=None
         if headers is None:
             headers = {}
         
@@ -84,26 +104,26 @@ class MarketSession(LoggerMixin):
         return headers
     
     async def get(self, url: str, **kwargs) -> httpx.Response:
-        """Executa requisição GET."""
-        await self._wait_rate_limit()
-        client = await self._get_client()
-        
-        # CORREÇÃO: Usa {} como default se headers for None
-        headers = self._add_referer(url, kwargs.pop("headers", None))
-        
-        response = await client.get(url, headers=headers, **kwargs)
-        return await self._handle_response(response)
+        """Executa requisição GET com controle de concorrência."""
+        async with self._semaphore:
+            await self._wait_rate_limit()
+            client = await self._get_client()
+            
+            headers = self._add_referer(url, kwargs.pop("headers", None))
+            
+            response = await client.get(url, headers=headers, **kwargs)
+            return await self._handle_response(response)
     
     async def post(self, url: str, **kwargs) -> httpx.Response:
-        """Executa requisição POST."""
-        await self._wait_rate_limit()
-        client = await self._get_client()
-        
-        # CORREÇÃO: Usa {} como default se headers for None
-        headers = self._add_referer(url, kwargs.pop("headers", None))
-        
-        response = await client.post(url, headers=headers, **kwargs)
-        return await self._handle_response(response)
+        """Executa requisição POST com controle de concorrência."""
+        async with self._semaphore:
+            await self._wait_rate_limit()
+            client = await self._get_client()
+            
+            headers = self._add_referer(url, kwargs.pop("headers", None))
+            
+            response = await client.post(url, headers=headers, **kwargs)
+            return await self._handle_response(response)
     
     async def close(self):
         """Fecha a sessão."""
@@ -113,7 +133,15 @@ class MarketSession(LoggerMixin):
 
 
 class HTTPClientPool(LoggerMixin):
-    """Pool de clientes HTTP por mercado."""
+    """
+    Pool de clientes HTTP por mercado.
+    
+    OTIMIZAÇÕES:
+    - HTTP/2 com multiplexing
+    - Connection pooling por mercado
+    - Semáforos para controle de concorrência
+    - Keep-alive agressivo
+    """
     
     _instance: Optional["HTTPClientPool"] = None
     
@@ -181,7 +209,6 @@ http_client = None
 
 
 async def init_http_client():
-    """Inicializa cliente HTTP global."""
     global http_client
     http_client = await get_http_client()
     return http_client
