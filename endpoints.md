@@ -1,298 +1,737 @@
-Implemente o cache multi-layer primeiro - maior impacto imediato
-Ajuste os timeouts - limite o pior caso
-Adicione métricas - monitore latência por mercado
-Considere WebSocket para bots - reduz overhead de HTTP
-Implemente queue para picos - RabbitMQ ou Redis Streams
+# Guia de Uso da API Price Collector
 
-# Explicação dos Endpoints de Busca Rápida
-
-## Visão Geral
-
-Os endpoints `/fast` foram criados especificamente para bots (WhatsApp/Telegram) que precisam de respostas rápidas e simplificadas.
+Este documento descreve como utilizar os endpoints da API REST do Price Collector. A API foi construída com FastAPI e segue padrões REST.
 
 ---
 
-## Endpoint 1: `/api/v1/search/fast` (GET)
+## Configuração Base
 
-### Propósito
-Busca **um único produto** da forma mais rápida possível.
+### URL Base
 
-### Como usar
-
-```bash
-# Busca simples
-GET /api/v1/search/fast?q=arroz
-
-# Com CEP para priorizar mercados próximos
-GET /api/v1/search/fast?q=arroz&cep=01310100
+```
+http://localhost:8000/api/v1
 ```
 
-### Resposta
+A porta padrão é `8000`, configurável via variável de ambiente `API_PORT`.
 
-```json
-{
-  "found": true,
-  "query": "arroz",
-  "product": "Arroz Tio João 5kg",
-  "price": "R$ 24,90",
-  "market": "Carrefour",
-  "url": "https://...",
-  "total_results": 15,
-  "cache_hit": false,
-  "duration_ms": 1250
-}
-```
+### Headers Padrão
 
-### Características
-- **Timeout:** 5 segundos máximo
-- **Early return:** Retorna assim que encontrar 3 resultados
-- **Resposta mínima:** Só o essencial para o bot exibir
+Todas as requisições devem incluir:
 
----
-
-## Endpoint 2: `/api/v1/search/fast/multi` (POST)
-
-### Propósito
-Busca **múltiplos produtos** em paralelo (lista de compras).
-
-### Como usar
-
-```bash
-POST /api/v1/search/fast/multi
+```http
 Content-Type: application/json
-
-{
-  "items": ["arroz", "feijão", "óleo", "açúcar"],
-  "cep": "01310100"
-}
+Accept: application/json
 ```
 
-### Resposta
+### Formato de Resposta
+
+Todas as respostas seguem o formato JSON. Em caso de erro, o formato padrão é:
 
 ```json
 {
-  "success": true,
-  "total_items": 4,
-  "items_found": 4,
-  "total": "R$ 52,60",
-  "items": [
-    {
-      "query": "arroz",
-      "found": true,
-      "product": "Arroz Tio João 5kg",
-      "price": "R$ 24,90",
-      "market": "Carrefour",
-      "url": "https://..."
-    },
-    {
-      "query": "feijão",
-      "found": true,
-      "product": "Feijão Carioca Camil 1kg",
-      "price": "R$ 8,90",
-      "market": "Pão de Açúcar",
-      "url": "https://..."
-    }
-  ],
-  "duration_ms": 2100
+    "detail": "Descrição do erro",
+    "status_code": 400
 }
 ```
 
-### Características
-- **Paralelo:** Todos os itens são buscados simultaneamente
-- **Total calculado:** Soma os preços automaticamente
-- **Limite:** Máximo 20 itens por requisição
-
 ---
 
-## Por que GET vs POST?
+## Endpoints de Busca
 
-| Aspecto | GET `/fast` | POST `/fast/multi` |
-|---------|-------------|-------------------|
-| **Dados** | Query string (`?q=arroz`) | Corpo JSON |
-| **Cache HTTP** | Pode ser cacheado por CDN/proxy | Não cacheia |
-| **Tamanho** | Limitado (~2000 caracteres) | Pode ser grande |
-| **Uso** | Busca única | Lista de itens |
+### GET /search
 
----
+Realiza uma busca simples por produtos em todos os mercados disponíveis.
 
-## Sobre Corpo JSON e Interpretação
+**Parâmetros de Query**
 
-### Como o FastAPI interpreta o corpo JSON
+|Parâmetro|Tipo|Obrigatório|Descrição|
+|---|---|---|---|
+|q|string|Sim|Termo de busca|
+|cep|string|Não|CEP para filtrar mercados regionais|
+|limit|integer|Não|Limite de resultados por mercado (padrão: 10)|
+|markets|string|Não|IDs dos mercados separados por vírgula|
 
-No FastAPI, o **tipo do parâmetro** determina como a requisição é interpretada:
-
-```python
-# 1. Query Parameters (GET) - Dados na URL
-@router.get("/fast")
-async def fast_search(
-    q: str = Query(...),      # Vem de ?q=valor
-    cep: str = Query(None),   # Vem de ?cep=valor
-):
-    pass
-
-# 2. Body JSON (POST) - Dados no corpo
-@router.post("/fast/multi")
-async def fast_multi_search(
-    body: MultiItemRequest,   # Vem do JSON no corpo
-):
-    pass
-```
-
-### Exemplo de como funciona internamente
-
-```python
-from pydantic import BaseModel
-
-# Define o schema do corpo
-class MultiItemRequest(BaseModel):
-    items: list[str]      # ["arroz", "feijão"]
-    cep: str | None       # "01310100" ou null
-
-# FastAPI automaticamente:
-# 1. Lê o corpo da requisição
-# 2. Faz parse do JSON
-# 3. Valida contra o schema
-# 4. Converte para o objeto Python
-```
-
-### Mesmo endpoint, comportamentos diferentes?
-
-Se você quer o **mesmo endpoint** aceitando formatos diferentes, pode usar `Union`:
-
-```python
-from typing import Union
-from pydantic import BaseModel
-
-# Schema para busca simples
-class SingleSearch(BaseModel):
-    query: str
-    cep: str | None = None
-
-# Schema para busca múltipla
-class MultiSearch(BaseModel):
-    items: list[str]
-    cep: str | None = None
-
-# Endpoint único que aceita ambos
-@router.post("/search")
-async def unified_search(
-    body: Union[SingleSearch, MultiSearch],
-):
-    # Verifica qual tipo foi enviado
-    if isinstance(body, MultiSearch):
-        # Processa lista
-        return await process_multi(body.items, body.cep)
-    else:
-        # Processa único
-        return await process_single(body.query, body.cep)
-```
-
-### Uso:
+**Exemplo de Requisição**
 
 ```bash
+curl -X GET "http://localhost:8000/api/v1/search?q=arroz%205kg&limit=5"
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "request_id": "abc12345-def6-7890-ghij-klmnopqrstuv",
+    "query": "arroz 5kg",
+    "status": "success",
+    "total_results": 45,
+    "search_time_ms": 1234,
+    "markets_searched": 8,
+    "markets_responded": 8,
+    "best_offer": {
+        "title": "Arroz Tipo 1 Tio João 5kg",
+        "price": 24.99,
+        "normalized_price": 5.00,
+        "unit": "kg",
+        "market_id": "atacadao",
+        "market_name": "Atacadão",
+        "url": "https://www.atacadao.com.br/arroz-tio-joao-5kg",
+        "image_url": "https://...",
+        "availability": "available"
+    },
+    "results": [
+        {
+            "title": "Arroz Tipo 1 Tio João 5kg",
+            "price": 24.99,
+            "normalized_price": 5.00,
+            "unit": "kg",
+            "quantity": 5.0,
+            "market_id": "atacadao",
+            "market_name": "Atacadão",
+            "url": "https://...",
+            "image_url": "https://...",
+            "availability": "available",
+            "relevance_score": 0.95,
+            "rank": 1
+        }
+    ]
+}
+```
+
+---
+
+### POST /search
+
+Realiza uma busca avançada com mais opções de configuração.
+
+**Corpo da Requisição**
+
+```json
+{
+    "query": "string",
+    "cep": "string",
+    "limit": 10,
+    "markets": ["carrefour", "atacadao"],
+    "ranking_strategy": "PRICE_FIRST",
+    "min_relevance": 0.5,
+    "include_unavailable": false,
+    "timeout_seconds": 10
+}
+```
+
+**Parâmetros do Body**
+
+|Campo|Tipo|Obrigatório|Descrição|
+|---|---|---|---|
+|query|string|Sim|Termo de busca|
+|cep|string|Não|CEP para mercados regionais|
+|limit|integer|Não|Limite de resultados por mercado (padrão: 10)|
+|markets|array|Não|Lista de IDs de mercados específicos|
+|ranking_strategy|string|Não|Estratégia de ranking: PRICE_FIRST, RELEVANCE_FIRST, BALANCED|
+|min_relevance|float|Não|Score mínimo de relevância (0.0 a 1.0)|
+|include_unavailable|boolean|Não|Incluir produtos indisponíveis|
+|timeout_seconds|integer|Não|Timeout máximo da busca|
+
+**Estratégias de Ranking**
+
+|Estratégia|Peso Relevância|Peso Preço|Descrição|
+|---|---|---|---|
+|PRICE_FIRST|20%|80%|Prioriza menor preço|
+|RELEVANCE_FIRST|80%|20%|Prioriza relevância da busca|
+|BALANCED|40%|60%|Equilíbrio entre ambos|
+
+**Exemplo de Requisição**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "leite integral 1L",
+    "cep": "01310100",
+    "limit": 20,
+    "markets": ["carrefour", "pao_acucar", "atacadao"],
+    "ranking_strategy": "PRICE_FIRST",
+    "min_relevance": 0.6
+  }'
+```
+
+---
+
+### GET /search/compare
+
+Compara o preço de um produto específico entre todos os mercados.
+
+**Parâmetros de Query**
+
+|Parâmetro|Tipo|Obrigatório|Descrição|
+|---|---|---|---|
+|q|string|Sim|Termo de busca|
+|cep|string|Não|CEP para filtrar mercados|
+
+**Exemplo de Requisição**
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/search/compare?q=coca-cola%202L"
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "request_id": "xyz98765",
+    "query": "coca-cola 2L",
+    "status": "success",
+    "comparison": {
+        "best_price": {
+            "market_id": "atacadao",
+            "market_name": "Atacadão",
+            "price": 7.99,
+            "normalized_price": 4.00,
+            "unit": "L"
+        },
+        "worst_price": {
+            "market_id": "pao_acucar",
+            "market_name": "Pão de Açúcar",
+            "price": 10.99,
+            "normalized_price": 5.50,
+            "unit": "L"
+        },
+        "average_price": 9.25,
+        "price_range": 3.00,
+        "savings_percentage": 27.3
+    },
+    "by_market": [
+        {
+            "market_id": "atacadao",
+            "market_name": "Atacadão",
+            "best_offer": {
+                "title": "Coca-Cola Original 2L",
+                "price": 7.99,
+                "normalized_price": 4.00,
+                "url": "https://..."
+            },
+            "total_offers": 3
+        },
+        {
+            "market_id": "carrefour",
+            "market_name": "Carrefour",
+            "best_offer": {
+                "title": "Refrigerante Coca-Cola 2 Litros",
+                "price": 8.49,
+                "normalized_price": 4.25,
+                "url": "https://..."
+            },
+            "total_offers": 5
+        }
+    ]
+}
+```
+
+---
+
+### GET /search/fast
+
+Endpoint otimizado para bots e integrações que precisam de resposta rápida. Retorna apenas os dados essenciais.
+
+**Parâmetros de Query**
+
+|Parâmetro|Tipo|Obrigatório|Descrição|
+|---|---|---|---|
+|q|string|Sim|Termo de busca|
+|limit|integer|Não|Limite total de resultados (padrão: 5)|
+
+**Características**
+
+- Timeout reduzido (5 segundos)
+- Early return quando encontrar resultados mínimos
+- Resposta compacta sem metadados extras
+- Ideal para chatbots e automações
+
+**Exemplo de Requisição**
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/search/fast?q=banana&limit=3"
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "query": "banana",
+    "best": {
+        "title": "Banana Prata kg",
+        "price": 5.99,
+        "market": "Atacadão",
+        "url": "https://..."
+    },
+    "alternatives": [
+        {
+            "title": "Banana Nanica kg",
+            "price": 4.99,
+            "market": "Carrefour"
+        },
+        {
+            "title": "Banana Prata Premium kg",
+            "price": 7.49,
+            "market": "Pão de Açúcar"
+        }
+    ]
+}
+```
+
+---
+
+### POST /search/multi
+
+Busca múltiplos itens de uma vez, ideal para listas de compras.
+
+**Corpo da Requisição**
+
+```json
+{
+    "items": [
+        {"query": "arroz 5kg", "quantity": 2},
+        {"query": "feijão 1kg", "quantity": 1},
+        {"query": "óleo de soja 900ml", "quantity": 3}
+    ],
+    "cep": "01310100",
+    "optimize_by": "total_price"
+}
+```
+
+**Parâmetros do Body**
+
+|Campo|Tipo|Obrigatório|Descrição|
+|---|---|---|---|
+|items|array|Sim|Lista de itens para buscar|
+|items[].query|string|Sim|Termo de busca do item|
+|items[].quantity|integer|Não|Quantidade desejada (padrão: 1)|
+|cep|string|Não|CEP para mercados regionais|
+|optimize_by|string|Não|Critério de otimização: total_price, single_market, balanced|
+
+**Opções de Otimização**
+
+|Opção|Descrição|
+|---|---|
+|total_price|Busca o menor preço para cada item, independente do mercado|
+|single_market|Tenta encontrar todos os itens no mesmo mercado|
+|balanced|Equilíbrio entre preço e conveniência|
+
+**Exemplo de Requisição**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/search/multi" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+        {"query": "arroz 5kg", "quantity": 1},
+        {"query": "feijão carioca 1kg", "quantity": 2},
+        {"query": "açúcar 1kg", "quantity": 1}
+    ],
+    "cep": "01310100",
+    "optimize_by": "total_price"
+  }'
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "request_id": "multi-123456",
+    "status": "success",
+    "items_found": 3,
+    "items_not_found": 0,
+    "estimated_total": 45.97,
+    "results": [
+        {
+            "query": "arroz 5kg",
+            "quantity": 1,
+            "found": true,
+            "best_offer": {
+                "title": "Arroz Tipo 1 Tio João 5kg",
+                "price": 24.99,
+                "market_name": "Atacadão",
+                "url": "https://..."
+            },
+            "subtotal": 24.99
+        },
+        {
+            "query": "feijão carioca 1kg",
+            "quantity": 2,
+            "found": true,
+            "best_offer": {
+                "title": "Feijão Carioca Camil 1kg",
+                "price": 7.49,
+                "market_name": "Carrefour",
+                "url": "https://..."
+            },
+            "subtotal": 14.98
+        },
+        {
+            "query": "açúcar 1kg",
+            "quantity": 1,
+            "found": true,
+            "best_offer": {
+                "title": "Açúcar Refinado União 1kg",
+                "price": 6.00,
+                "market_name": "Atacadão",
+                "url": "https://..."
+            },
+            "subtotal": 6.00
+        }
+    ],
+    "by_market": {
+        "atacadao": {
+            "items": 2,
+            "subtotal": 30.99
+        },
+        "carrefour": {
+            "items": 1,
+            "subtotal": 14.98
+        }
+    }
+}
+```
+
+---
+
+## Endpoints de Mercados
+
+### GET /markets
+
+Lista todos os mercados disponíveis no sistema.
+
+**Exemplo de Requisição**
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/markets"
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "total": 8,
+    "markets": [
+        {
+            "id": "carrefour",
+            "name": "Carrefour",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.carrefour.com.br"
+        },
+        {
+            "id": "atacadao",
+            "name": "Atacadão",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.atacadao.com.br"
+        },
+        {
+            "id": "pao_acucar",
+            "name": "Pão de Açúcar",
+            "active": true,
+            "requires_cep": true,
+            "logo_url": "https://...",
+            "website": "https://www.paodeacucar.com"
+        },
+        {
+            "id": "gbarbosa",
+            "name": "GBarbosa",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.gbarbosa.com.br"
+        },
+        {
+            "id": "samsclub",
+            "name": "Sam's Club",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.samsclub.com.br"
+        },
+        {
+            "id": "redemix",
+            "name": "Rede Mix",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.redemix.com.br"
+        },
+        {
+            "id": "mercantil",
+            "name": "Mercantil Atacado",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.mercantilatacado.com.br"
+        },
+        {
+            "id": "hiperideal",
+            "name": "Hiperideal",
+            "active": true,
+            "requires_cep": false,
+            "logo_url": "https://...",
+            "website": "https://www.hiperideal.com.br"
+        }
+    ]
+}
+```
+
+---
+
+### GET /markets/status
+
+Retorna o status dos circuit breakers de cada mercado. Útil para monitoramento.
+
+**Exemplo de Requisição**
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/markets/status"
+```
+
+**Exemplo de Resposta**
+
+```json
+{
+    "timestamp": "2025-01-25T15:30:00Z",
+    "markets": [
+        {
+            "id": "carrefour",
+            "name": "Carrefour",
+            "circuit_state": "CLOSED",
+            "is_available": true,
+            "failure_count": 0,
+            "last_failure": null,
+            "last_success": "2025-01-25T15:29:45Z",
+            "avg_response_time_ms": 1234
+        },
+        {
+            "id": "atacadao",
+            "name": "Atacadão",
+            "circuit_state": "CLOSED",
+            "is_available": true,
+            "failure_count": 0,
+            "last_failure": null,
+            "last_success": "2025-01-25T15:29:50Z",
+            "avg_response_time_ms": 890
+        },
+        {
+            "id": "pao_acucar",
+            "name": "Pão de Açúcar",
+            "circuit_state": "HALF_OPEN",
+            "is_available": true,
+            "failure_count": 3,
+            "last_failure": "2025-01-25T15:25:00Z",
+            "last_success": "2025-01-25T15:28:00Z",
+            "avg_response_time_ms": 2100
+        }
+    ],
+    "summary": {
+        "total_markets": 8,
+        "available": 7,
+        "unavailable": 1,
+        "circuit_states": {
+            "CLOSED": 6,
+            "HALF_OPEN": 1,
+            "OPEN": 1
+        }
+    }
+}
+```
+
+**Estados do Circuit Breaker**
+
+|Estado|Descrição|Comportamento|
+|---|---|---|
+|CLOSED|Normal|Aceita todas as requisições|
+|OPEN|Bloqueado|Rejeita requisições por tempo determinado|
+|HALF_OPEN|Testando|Permite uma requisição de teste para verificar recuperação|
+
+---
+
+## Códigos de Status HTTP
+
+|Código|Significado|Quando ocorre|
+|---|---|---|
+|200|OK|Requisição bem-sucedida|
+|400|Bad Request|Parâmetros inválidos|
+|404|Not Found|Recurso não encontrado|
+|408|Request Timeout|Timeout da busca excedido|
+|422|Unprocessable Entity|Erro de validação do corpo da requisição|
+|429|Too Many Requests|Rate limit excedido|
+|500|Internal Server Error|Erro interno do servidor|
+|503|Service Unavailable|Todos os mercados indisponíveis|
+
+---
+
+## Rate Limiting
+
+A API implementa rate limiting para proteger os servidores dos mercados.
+
+**Limites Padrão**
+
+|Escopo|Limite|Janela|
+|---|---|---|
+|Global|100 requisições|1 minuto|
+|Por IP|30 requisições|1 minuto|
+|Por mercado|10 requisições|1 minuto|
+
+**Headers de Rate Limit**
+
+As respostas incluem headers informativos:
+
+```http
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1706191800
+```
+
+**Resposta quando limite excedido**
+
+```json
+{
+    "detail": "Rate limit exceeded. Try again in 45 seconds.",
+    "status_code": 429,
+    "retry_after": 45
+}
+```
+
+---
+
+## Exemplos de Uso Prático
+
+### Encontrar o arroz mais barato
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/search?q=arroz%205kg&limit=1"
+```
+
+### Comparar preços de um produto específico
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/search/compare?q=leite%20integral%201L"
+```
+
+### Buscar em mercados específicos
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "café 500g",
+    "markets": ["carrefour", "atacadao"],
+    "ranking_strategy": "PRICE_FIRST"
+  }'
+```
+
+### Criar lista de compras otimizada
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/search/multi" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+        {"query": "arroz 5kg"},
+        {"query": "feijão 1kg", "quantity": 2},
+        {"query": "óleo 900ml", "quantity": 2},
+        {"query": "açúcar 1kg"},
+        {"query": "sal 1kg"},
+        {"query": "macarrão 500g", "quantity": 3}
+    ],
+    "optimize_by": "total_price"
+  }'
+```
+
+### Verificar saúde dos mercados
+
+```bash
+curl -X GET "http://localhost:8000/api/v1/markets/status"
+```
+
+---
+
+## Integração com Aplicações
+
+### Python
+
+```python
+import httpx
+
+async def search_product(query: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "http://localhost:8000/api/v1/search",
+            params={"q": query, "limit": 10}
+        )
+        return response.json()
+
+# Uso
+import asyncio
+result = asyncio.run(search_product("arroz 5kg"))
+print(f"Melhor preço: R$ {result['best_offer']['price']}")
+```
+
+### JavaScript/Node.js
+
+```javascript
+async function searchProduct(query) {
+    const response = await fetch(
+        `http://localhost:8000/api/v1/search?q=${encodeURIComponent(query)}&limit=10`
+    );
+    return response.json();
+}
+
+// Uso
+searchProduct("arroz 5kg").then(result => {
+    console.log(`Melhor preço: R$ ${result.best_offer.price}`);
+});
+```
+
+### cURL em Shell Script
+
+```bash
+#!/bin/bash
+
+QUERY="$1"
+API_URL="http://localhost:8000/api/v1"
+
 # Busca simples
-POST /search
-{"query": "arroz", "cep": "01310100"}
+result=$(curl -s "$API_URL/search?q=$(echo $QUERY | jq -sRr @uri)&limit=5")
 
-# Busca múltipla (mesmo endpoint!)
-POST /search
-{"items": ["arroz", "feijão"], "cep": "01310100"}
-```
+# Extrai melhor preço
+best_price=$(echo $result | jq -r '.best_offer.price')
+best_market=$(echo $result | jq -r '.best_offer.market_name')
 
-O FastAPI tenta validar contra cada schema na ordem e usa o primeiro que funcionar.
-
----
-
-## Exemplo Prático: Discriminador Explícito
-
-Para deixar mais claro, você pode usar um campo `type`:
-
-```python
-from pydantic import BaseModel, Field
-from typing import Literal
-
-class SingleSearch(BaseModel):
-    type: Literal["single"] = "single"
-    query: str
-    cep: str | None = None
-
-class MultiSearch(BaseModel):
-    type: Literal["multi"] = "multi"
-    items: list[str]
-    cep: str | None = None
-
-# FastAPI usa o campo 'type' para decidir qual schema usar
-@router.post("/search")
-async def search(body: Union[SingleSearch, MultiSearch]):
-    if body.type == "multi":
-        # Lista de compras
-        return await search_multi(body.items)
-    else:
-        # Produto único
-        return await search_single(body.query)
-```
-
-### Uso:
-
-```bash
-# Explicitamente single
-POST /search
-{"type": "single", "query": "arroz"}
-
-# Explicitamente multi
-POST /search
-{"type": "multi", "items": ["arroz", "feijão"]}
+echo "Produto: $QUERY"
+echo "Melhor preço: R$ $best_price em $best_market"
 ```
 
 ---
 
-## Fluxo Completo de uma Requisição
+## Documentação Interativa
+
+A API disponibiliza documentação interativa gerada automaticamente pelo FastAPI.
+
+**Swagger UI**
 
 ```
-Bot envia: POST /api/v1/search/fast/multi
-           {"items": ["arroz", "feijão"]}
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│           FastAPI                        │
-│  1. Recebe requisição HTTP               │
-│  2. Lê corpo (bytes)                     │
-│  3. Decodifica JSON → dict               │
-│  4. Valida contra MultiItemRequest       │
-│  5. Cria objeto Python                   │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│      Sua função (endpoint)               │
-│                                          │
-│  body.items = ["arroz", "feijão"]       │
-│  body.cep = None                         │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│      SearchService                       │
-│  - Busca "arroz" ─┐                     │
-│  - Busca "feijão" ┼─► Em paralelo       │
-│                   │                      │
-│  Retorna resultados                      │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-           Resposta JSON para o bot
+http://localhost:8000/docs
 ```
 
----
+**ReDoc**
 
-## Resumo
+```
+http://localhost:8000/redoc
+```
 
-| Conceito | Explicação |
-|----------|------------|
-| **GET com Query** | Parâmetros na URL (`?q=arroz`) |
-| **POST com Body** | Dados no corpo JSON |
-| **Pydantic Model** | Define estrutura esperada do JSON |
-| **Union types** | Permite múltiplos schemas no mesmo endpoint |
-| **Discriminador** | Campo `type` para decidir qual schema usar |
+**OpenAPI Schema**
 
-O FastAPI cuida de toda a validação e conversão automaticamente!
+```
+http://localhost:8000/openapi.json
+```
+
+Através do Swagger UI é possível testar todos os endpoints diretamente no navegador.

@@ -1,912 +1,539 @@
-# Price Tracker API - Documentacao Completa
+# Documentação do Sistema Price Collector
 
-## Visao Geral
+## Visão Geral
 
-O Price Tracker e um sistema de coleta e comparacao de precos de supermercados online. A aplicacao permite buscar produtos em multiplos mercados simultaneamente, normalizar precos por unidade (R$/kg, R$/L) e identificar as melhores ofertas.
+O Price Collector é um sistema de coleta e comparação de preços de supermercados online. Desenvolvido em Python, o sistema permite buscar produtos em múltiplos mercados simultaneamente, normalizar preços por unidade de medida e encontrar as melhores ofertas disponíveis.
+
+O projeto foi construído com foco em escalabilidade, manutenibilidade e performance, utilizando arquitetura modular que separa claramente as responsabilidades de cada componente.
+
+---
 
 ## Arquitetura do Sistema
 
-### Componentes Principais
+O sistema segue uma arquitetura em camadas, onde cada módulo possui responsabilidades bem definidas:
 
-1. **API FastAPI**: Camada de exposicao REST que recebe requisicoes HTTP
-2. **Search Service**: Orquestrador principal que coordena cache, rate limiting, circuit breakers e fan-out paralelo
-3. **Scraper Manager**: Gerencia os scrapers de cada mercado
-4. **Processing Pipeline**: Processa produtos brutos, normaliza quantidades e calcula precos por unidade
-5. **Ranking System**: Sistema de ranking fuzzy que combina relevancia e preco
-6. **Cache Service**: Cache Redis para resultados de busca
-7. **Storage Manager**: Persistencia em SQLite, CSV e Parquet
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         API REST                             │
+│                    (FastAPI - src/api)                       │
+├─────────────────────────────────────────────────────────────┤
+│                      Serviços                                │
+│              (Cache, Search, Rate Limiting)                  │
+├─────────────────────────────────────────────────────────────┤
+│                      Collector                               │
+│              (Orquestrador Principal)                        │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│   Scrapers   │   Pipeline   │   Ranking    │    Storage     │
+│  (Coleta)    │(Processamento)│  (Ordenação) │ (Persistência) │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+```
 
-### Fluxo de Busca
+---
 
-1. Requisicao chega na API
-2. Verificacao de rate limit do usuario
-3. Consulta ao cache Redis
-4. Se cache miss, verifica circuit breakers dos mercados
-5. Executa fan-out paralelo para mercados disponiveis
-6. Processa produtos pelo pipeline (parsing, normalizacao, calculo de preco)
-7. Aplica ranking fuzzy
-8. Cacheia resultado
-9. Retorna resposta
+## Estrutura de Diretórios
 
-## Configuracao Base
+```
+price-collector/
+├── config/                 # Configurações do sistema
+│   ├── __init__.py
+│   ├── settings.py         # Configurações globais via Pydantic
+│   ├── markets.py          # Configuração dos mercados suportados
+│   └── logging_config.py   # Configuração de logging estruturado
+├── src/                    # Código fonte principal
+│   ├── api/                # API REST FastAPI
+│   ├── core/               # Componentes centrais
+│   ├── pipeline/           # Processamento de dados
+│   ├── ranking/            # Sistema de relevância e ordenação
+│   ├── scrapers/           # Coletores por mercado
+│   ├── services/           # Serviços de negócio
+│   ├── shopping_list/      # Processador de lista de compras
+│   ├── storage/            # Persistência de dados
+│   ├── cli.py              # Interface de linha de comando
+│   └── collector.py        # Orquestrador principal
+├── data/                   # Diretório de dados gerados
+├── logs/                   # Arquivos de log
+└── pyproject.toml          # Configuração do projeto Python
+```
 
-- **URL Base**: `http://localhost:8000`
-- **Prefixo da API**: `/api/v1`
-- **Documentacao Swagger**: `/docs` (apenas em modo debug)
+---
 
-## Mercados Suportados
+## Módulos Principais
 
-| ID | Nome | Status |
+### Config
+
+O módulo de configuração centraliza todas as definições do sistema.
+
+#### settings.py
+
+Utiliza Pydantic Settings para carregar configurações de variáveis de ambiente e arquivo `.env`. As principais configurações incluem:
+
+|Categoria|Configuração|Descrição|Padrão|
+|---|---|---|---|
+|Ambiente|`env`|Ambiente de execução|development|
+|Ambiente|`debug`|Modo debug|False|
+|Ambiente|`log_level`|Nível de log|INFO|
+|API|`api_port`|Porta da API|8000|
+|API|`api_prefix`|Prefixo das rotas|/api/v1|
+|Cache|`redis_url`|URL do Redis|redis://localhost:6379/0|
+|Cache|`cache_ttl_seconds`|TTL do cache|300|
+|Collector|`collector_timeout_seconds`|Timeout por mercado|30|
+|Collector|`collector_concurrent_limit`|Limite de concorrência|5|
+
+#### markets.py
+
+Define a configuração de cada mercado suportado através da classe `MarketConfig`:
+
+|Mercado|ID|Status|Método|Requer CEP|
+|---|---|---|---|---|
+|Carrefour|carrefour|Ativo|API|Não|
+|Atacadão|atacadao|Ativo|API|Não|
+|Pão de Açúcar|pao_acucar|Ativo|API|Sim|
+|GBarbosa|gbarbosa|Ativo|API|Não|
+|Sam's Club|samsclub|Ativo|API|Não|
+|Rede Mix|redemix|Ativo|API|Não|
+|Mercantil Atacado|mercantil|Ativo|API|Não|
+|Hiperideal|hiperideal|Ativo|API|Não|
+|Extra|extra|Descontinuado|Playwright|Não|
+
+---
+
+### Core
+
+O módulo core contém os componentes fundamentais do sistema.
+
+#### models.py
+
+Define os modelos de dados usando Pydantic:
+
+**RawProduct**: Produto bruto extraído do scraper, contendo dados exatamente como vieram do site.
+
+**QuantityInfo**: Informação de quantidade extraída e normalizada, incluindo valor, unidade e multiplicador para packs.
+
+**NormalizedProduct**: Produto com dados normalizados e validados, pronto para cálculo de preço por unidade.
+
+**PriceOffer**: Oferta final com preço normalizado por unidade, estrutura principal para comparação de preços.
+
+**SearchResult**: Resultado completo de uma busca, contendo metadados e lista de ofertas.
+
+#### types.py
+
+Define tipos customizados e enumerações:
+
+|Enumeração|Valores|Uso|
 |---|---|---|
-| carrefour | Carrefour | Ativo |
-| atacadao | Atacadao | Ativo |
-| pao_acucar | Pao de Acucar | Ativo |
-| gbarbosa | GBarbosa | Ativo |
-| samsclub | Sam's Club | Ativo |
-| redemix | Rede Mix | Ativo |
-| mercantil | Mercantil Atacado | Ativo |
-| hiperideal | Hiperideal | Ativo |
+|Unit|kg, g, mg, L, ml, un, pack, dz|Unidades de medida|
+|Availability|available, unavailable, low_stock, unknown|Status de disponibilidade|
+|NormalizationStatus|success, partial, failed, n/a|Status da normalização|
+|CollectionStatus|success, partial, failed, timeout, blocked|Status da coleta|
+
+#### http_client.py
+
+Implementa um pool de clientes HTTP com as seguintes características:
+
+- HTTP/2 com multiplexing para melhor performance
+- Connection pooling por mercado
+- Rate limiting automático por domínio
+- Semáforos para controle de concorrência
+- Headers anti-detecção configurados
+
+#### browser_pool.py
+
+Gerencia instâncias do Playwright para scrapers que necessitam de renderização JavaScript:
+
+- Reutilização de contextos por mercado
+- Scripts anti-detecção injetados
+- Limite de páginas simultâneas via semáforo
+- User agents rotativos
 
 ---
 
-## Endpoints de Saude
+### Scrapers
 
-### GET /health
+Cada mercado possui seu próprio scraper, todos herdando de uma classe base comum.
 
-Verifica a saude da API e seus componentes.
+#### Hierarquia de Classes
 
-**Resposta:**
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0",
-  "environment": "development",
-  "components": {
-    "api": "ok",
-    "redis": "connected",
-    "mercados_enabled": 8
-  }
-}
+```
+BaseScraper (base.py)
+    └── BaseAPIScraper (base_api.py)
+            ├── CarrefourScraper
+            ├── AtacadaoScraper
+            ├── PaoDeAcucarScraper
+            └── VTEXOptimizedScraper (vtex_graphql.py)
+                    ├── GBarbosaScraper
+                    ├── SamsClubScraper
+                    ├── RedeMixScraper
+                    ├── MercantilAtacadoScraper
+                    └── HiperidealScraper
 ```
 
-### GET /
+#### BaseAPIScraper
 
-Retorna informacoes basicas da API.
+Classe base para scrapers que utilizam APIs HTTP. Características:
 
-**Resposta:**
-```json
-{
-  "name": "Price Tracker API",
-  "version": "1.0.0",
-  "docs": "/docs",
-  "health": "/health",
-  "api": "/api/v1"
-}
-```
+- Tratamento de respostas comprimidas (Brotli, gzip, deflate)
+- Retry automático com backoff exponencial
+- Parsing de JSON com fallback para múltiplos encodings
 
----
+#### VTEXOptimizedScraper
 
-## Endpoints de Busca
+Classe especializada para lojas que utilizam plataforma VTEX:
 
-### GET /api/v1/search
+- Suporta Intelligent Search API com fallback para Legacy Search
+- 50 produtos por página (máximo VTEX)
+- Parsing padronizado de produtos VTEX
 
-Busca simples de produtos em multiplos supermercados.
+#### ScraperManager
 
-**Parametros de Query:**
+Orquestra a execução de múltiplos scrapers em paralelo:
 
-| Parametro | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| q | string | Sim | Termo de busca (2-100 caracteres) |
-| cep | string | Nao | CEP para localizacao (8 digitos) |
-| markets | string | Nao | Mercados separados por virgula |
-| limit | integer | Nao | Limite de resultados (1-100, padrao: 20) |
-
-**Exemplo de Requisicao:**
-```
-GET /api/v1/search?q=arroz%205kg&cep=01310100&limit=10
-```
-
-**Resposta:**
-```json
-{
-  "request_id": "abc12345",
-  "query": "arroz 5kg",
-  "status": "success",
-  "total_results": 45,
-  "results": [
-    {
-      "rank": 1,
-      "title": "Arroz Tipo 1 Tio Joao 5kg",
-      "price": 24.99,
-      "price_formatted": "R$ 24,99",
-      "normalized_price": 4.998,
-      "normalized_price_formatted": "R$ 5,00/kg",
-      "market_id": "carrefour",
-      "market_name": "Carrefour",
-      "url": "https://...",
-      "image_url": "https://...",
-      "is_relevant": true,
-      "is_comparable": true,
-      "relevance_score": 0.95,
-      "price_score": 0.87,
-      "final_score": 0.89
-    }
-  ],
-  "best_offer": { ... },
-  "metadata": {
-    "markets_searched": ["carrefour", "atacadao"],
-    "markets_failed": [],
-    "cache_hit": false,
-    "duration_ms": 2450
-  },
-  "errors": null
-}
-```
-
-### POST /api/v1/search
-
-Busca avancada com mais opcoes de configuracao.
-
-**Corpo da Requisicao:**
-```json
-{
-  "query": "arroz 5kg",
-  "cep": "01310100",
-  "markets": ["carrefour", "atacadao"],
-  "max_pages": 2,
-  "include_unavailable": false
-}
-```
-
-**Campos:**
-
-| Campo | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| query | string | Sim | Termo de busca |
-| cep | string | Nao | CEP para localizacao |
-| markets | array | Nao | Lista de mercados especificos |
-| max_pages | integer | Nao | Maximo de paginas por mercado (1-5) |
-| include_unavailable | boolean | Nao | Incluir produtos indisponiveis |
-
-### GET /api/v1/search/compare
-
-Compara precos de um produto entre mercados.
-
-**Parametros de Query:**
-
-| Parametro | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| q | string | Sim | Termo de busca |
-| cep | string | Nao | CEP para localizacao |
-
-**Exemplo:**
-```
-GET /api/v1/search/compare?q=leite%20integral%201L
-```
-
-**Resposta:**
-```json
-{
-  "query": "leite integral 1L",
-  "total_offers": 32,
-  "comparable_offers": 28,
-  "best_offer": {
-    "market_name": "Atacadao",
-    "title": "Leite Integral Piracanjuba 1L",
-    "price": 4.99,
-    "normalized_price": 4.99,
-    "url": "https://..."
-  },
-  "by_market": {
-    "carrefour": {
-      "market_name": "Carrefour",
-      "offers_count": 12,
-      "min_price": 5.29,
-      "min_normalized_price": 5.29
-    },
-    "atacadao": {
-      "market_name": "Atacadao",
-      "offers_count": 8,
-      "min_price": 4.99,
-      "min_normalized_price": 4.99
-    }
-  },
-  "potential_savings": [
-    {
-      "best_market": "Atacadao",
-      "compared_market": "Carrefour",
-      "savings_absolute": 0.30,
-      "savings_percentage": 5.7
-    }
-  ]
-}
-```
-
-### GET /api/v1/search/quick
-
-Busca rapida que retorna apenas o melhor preco. Ideal para bots.
-
-**Parametros de Query:**
-
-| Parametro | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| q | string | Sim | Termo de busca |
-| cep | string | Nao | CEP para localizacao |
-
-**Exemplo:**
-```
-GET /api/v1/search/quick?q=banana%20prata
-```
-
-**Resposta:**
-```json
-{
-  "found": true,
-  "query": "banana prata",
-  "product": "Banana Prata kg",
-  "price": "R$ 5,99",
-  "normalized_price": "R$ 5,99/kg",
-  "market": "Carrefour",
-  "url": "https://...",
-  "total_results": 15,
-  "cache_hit": false
-}
+```python
+manager = ScraperManager()
+products, metadata = await manager.search_all(
+    query="arroz 5kg",
+    cep="01310100",
+    max_pages=2
+)
 ```
 
 ---
 
-## Endpoints de Busca Multipla
+### Pipeline
 
-### POST /api/v1/search/multi
+O pipeline processa os dados brutos extraídos pelos scrapers.
 
-Busca multiplos itens de uma vez, com opcao de otimizacao por mercado unico.
+#### Fluxo de Processamento
 
-**Corpo da Requisicao:**
-```json
-{
-  "items": ["arroz 5kg", "feijao 1kg", "oleo 900ml"],
-  "cep": "01310100",
-  "markets": ["carrefour", "atacadao"],
-  "single_market": false
-}
+```
+RawProduct → Parser → NormalizedProduct → Calculator → PriceOffer → Ranker → RankedOffer
 ```
 
-**Campos:**
+#### ProductParser
 
-| Campo | Tipo | Obrigatorio | Descricao |
+Converte strings de preço para Decimal, tratando formatos brasileiros:
+
+- "R$ 12,99" ou "12.99" para Decimal
+- Extrai preço unitário quando disponível no site
+- Determina disponibilidade a partir de texto
+
+#### QuantityNormalizer
+
+Extrai e normaliza quantidades do título do produto:
+
+|Formato de Entrada|Quantidade Extraída|
+|---|---|
+|"Arroz 5kg"|5.0 kg|
+|"Leite 1L"|1.0 L|
+|"Cerveja 12x350ml"|4.2 L (12 * 350ml)|
+|"Pack c/ 6 unidades"|6 un|
+|"Banana por kg"|1.0 kg (inferido)|
+
+#### PriceCalculator
+
+Calcula o preço normalizado por unidade base:
+
+```
+Preço Normalizado = Preço Total / Quantidade em Unidade Base
+```
+
+Exemplo: Arroz 5kg por R$ 25,00 resulta em R$ 5,00/kg
+
+---
+
+### Ranking
+
+Sistema de classificação de resultados por relevância e preço.
+
+#### FuzzyMatcher
+
+Verifica se um produto é relevante para a busca. A regra principal é que a primeira palavra da busca deve ser igual à primeira palavra do título do produto.
+
+|Busca|Título|Relevante|
+|---|---|---|
+|"arroz 5kg"|"Arroz Tipo 1 Tio João 5kg"|Sim|
+|"arroz 5kg"|"Feijão Carioca 1kg"|Não|
+|"leite integral"|"Leite Integral Piracanjuba 1L"|Sim|
+
+#### ResultRanker
+
+Combina relevância e preço para criar ranking final. Estratégias disponíveis:
+
+|Estratégia|Peso Relevância|Peso Preço|Uso|
 |---|---|---|---|
-| items | array | Sim | Lista de itens (1-20 itens) |
-| cep | string | Nao | CEP para localizacao |
-| markets | array | Nao | Mercados especificos |
-| single_market | boolean | Nao | Se true, encontra melhor mercado unico |
+|PRICE_FIRST|0.2|0.8|Prioriza menor preço|
+|RELEVANCE_FIRST|0.8|0.2|Prioriza relevância|
+|BALANCED|0.4|0.6|Equilíbrio entre ambos|
 
-**Modos de Operacao:**
+---
 
-**single_market=false (padrao):** Retorna o melhor preco de cada item, mesmo que sejam de mercados diferentes.
+### Services
 
-**single_market=true:** Encontra qual mercado unico tem o menor valor total da lista.
+Camada de serviços que orquestra a lógica de negócio.
 
-**Resposta (single_market=false):**
+#### CacheService
+
+Implementa cache em duas camadas:
+
+|Camada|Tecnologia|TTL|Latência|
+|---|---|---|---|
+|L1|Memória (LRU)|60s|~0.1ms|
+|L2|Redis|300s|~1-5ms|
+
+Fluxo de leitura:
+
+1. Verifica L1 (memória)
+2. Se não encontrar, verifica L2 (Redis)
+3. Se encontrar em L2, popula L1
+
+#### SearchService
+
+Serviço principal de busca com as seguintes otimizações:
+
+- Early return quando atingir número mínimo de resultados
+- Streaming de resultados conforme mercados completam
+- Circuit breaker por mercado para isolar falhas
+- Timeout por mercado e timeout global
+
+Os circuit breakers possuem três estados:
+
+|Estado|Descrição|Ação|
+|---|---|---|
+|CLOSED|Normal|Aceita requisições|
+|OPEN|Bloqueado|Rejeita requisições|
+|HALF_OPEN|Testando|Permite uma requisição de teste|
+
+---
+
+### API
+
+API REST construída com FastAPI.
+
+#### Endpoints Principais
+
+|Método|Rota|Descrição|
+|---|---|---|
+|GET|/api/v1/search|Busca produtos|
+|POST|/api/v1/search|Busca avançada|
+|GET|/api/v1/search/compare|Compara preços entre mercados|
+|GET|/api/v1/search/fast|Busca otimizada para bots|
+|POST|/api/v1/search/multi|Busca múltiplos itens|
+|GET|/api/v1/markets|Lista mercados disponíveis|
+|GET|/api/v1/markets/status|Status dos circuit breakers|
+
+#### Exemplo de Resposta de Busca
+
 ```json
 {
-  "request_id": "abc12345",
-  "mode": "best_per_item",
-  "items_results": [
-    {
-      "query": "arroz 5kg",
-      "status": "found",
-      "best_offer": {
-        "title": "Arroz Tipo 1 5kg",
+    "request_id": "abc12345",
+    "query": "arroz 5kg",
+    "status": "success",
+    "total_results": 45,
+    "best_offer": {
+        "title": "Arroz Tipo 1 Tio João 5kg",
         "price": 24.99,
-        "price_formatted": "R$ 24,99",
-        "market_id": "atacadao",
-        "market_name": "Atacadao",
+        "normalized_price": 5.00,
+        "market_name": "Atacadão",
         "url": "https://..."
-      },
-      "alternatives": [...],
-      "offers_count": 12
-    }
-  ],
-  "summary": {
-    "total_items": 3,
-    "items_found": 3,
-    "items_not_found": 0,
-    "estimated_total": 45.97,
-    "estimated_total_formatted": "R$ 45,97",
-    "markets_involved": ["atacadao", "carrefour"],
-    "markets_count": 2
-  },
-  "metadata": {
-    "cep": "01310100",
-    "single_market": false,
-    "duration_ms": 3200
-  }
-}
-```
-
-**Resposta (single_market=true):**
-```json
-{
-  "request_id": "abc12345",
-  "mode": "single_market",
-  "items_results": [...],
-  "summary": {
-    "total_items": 3,
-    "items_found": 3,
-    "best_per_item_total": 45.97,
-    "single_market_total": 47.50,
-    "winner_market": "Atacadao",
-    "markets_analyzed": 5
-  },
-  "winner": {
-    "market_id": "atacadao",
-    "market_name": "Atacadao",
-    "total": 47.50,
-    "total_formatted": "R$ 47,50",
-    "items_found": 3,
-    "items_missing": [],
-    "coverage_percent": 100.0
-  },
-  "comparison": [
-    {
-      "market_id": "atacadao",
-      "market_name": "Atacadao",
-      "total": 47.50,
-      "items_found": 3,
-      "coverage_percent": 100.0
     },
-    {
-      "market_id": "carrefour",
-      "market_name": "Carrefour",
-      "total": 49.80,
-      "items_found": 3,
-      "coverage_percent": 100.0
-    }
-  ],
-  "savings": {
-    "vs_worst": 4.30,
-    "vs_worst_formatted": "R$ 4,30",
-    "vs_worst_market": "Pao de Acucar",
-    "note": "Comprar tudo no Atacadao e mais barato que item a item!"
-  }
-}
-```
-
-### POST /api/v1/search/multi/quick
-
-Versao simplificada da busca multipla para integracao com bots.
-
-**Corpo da Requisicao:** Mesmo do endpoint `/search/multi`
-
-**Resposta (single_market=false):**
-```json
-{
-  "success": true,
-  "mode": "best_per_item",
-  "total_items": 3,
-  "items_found": 3,
-  "total": "R$ 45,97",
-  "markets_count": 2,
-  "items": [
-    {
-      "query": "arroz 5kg",
-      "found": true,
-      "price": "R$ 24,99",
-      "market": "Atacadao"
-    }
-  ]
+    "results": [...]
 }
 ```
 
 ---
 
-## Endpoints de Mercados
+### Storage
 
-### GET /api/v1/markets
+Persistência de dados com suporte a múltiplos backends.
 
-Lista todos os mercados suportados pelo sistema.
+|Backend|Formato|Uso Recomendado|
+|---|---|---|
+|SQLite|Banco relacional|Consultas complexas, histórico|
+|CSV|Texto estruturado|Exportação, visualização|
+|Parquet|Binário comprimido|Grandes volumes, análise|
 
-**Resposta:**
-```json
-[
-  {
-    "id": "carrefour",
-    "name": "Carrefour",
-    "status": "active",
-    "enabled": true,
-    "requires_cep": false,
-    "rate_limit": 8
-  },
-  {
-    "id": "atacadao",
-    "name": "Atacadao",
-    "status": "active",
-    "enabled": true,
-    "requires_cep": false,
-    "rate_limit": 10
-  }
+#### StorageManager
+
+Unifica acesso aos diferentes backends:
+
+```python
+manager = StorageManager(base_path=Path("./data"))
+
+# Salva em SQLite (padrão)
+await manager.save_search_result(result)
+
+# Exporta para CSV
+await manager.export_to_csv(search_query="arroz")
+
+# Exporta para Parquet
+await manager.export_to_parquet(market_id="carrefour")
+```
+
+---
+
+### Shopping List
+
+Módulo para processamento de listas de compras completas.
+
+#### Funcionalidades
+
+- Busca cada item da lista em todos os mercados
+- Encontra o melhor preço para cada item
+- Calcula total estimado da compra
+- Agrupa resultados por mercado
+- Exporta em múltiplos formatos (texto, HTML, JSON, Markdown, CSV)
+
+#### Exemplo de Uso
+
+```python
+processor = ShoppingListProcessor()
+
+items = [
+    ShoppingItem("arroz 5kg", quantity=2),
+    ShoppingItem("feijão 1kg"),
+    ShoppingItem("leite 1L", quantity=6)
 ]
-```
 
-### GET /api/v1/markets/enabled
+result = await processor.process(items, cep="01310100")
 
-Retorna apenas os mercados habilitados para busca.
-
-### GET /api/v1/markets/status
-
-Retorna o status dos circuit breakers de cada mercado.
-
-**Resposta:**
-```json
-{
-  "carrefour": {
-    "market_id": "carrefour",
-    "state": "closed",
-    "failure_count": 0,
-    "success_count": 45,
-    "last_failure": null,
-    "last_success": "2024-01-15T10:30:00"
-  },
-  "atacadao": {
-    "market_id": "atacadao",
-    "state": "open",
-    "failure_count": 3,
-    "success_count": 12,
-    "last_failure": "2024-01-15T10:25:00",
-    "last_success": "2024-01-15T10:20:00"
-  }
-}
-```
-
-**Estados do Circuit Breaker:**
-
-| Estado | Descricao |
-|---|---|
-| closed | Normal - aceita requisicoes |
-| open | Bloqueado - muitas falhas recentes |
-| half_open | Testando recuperacao |
-
-### GET /api/v1/markets/{market_id}
-
-Retorna informacoes detalhadas de um mercado especifico.
-
-**Exemplo:**
-```
-GET /api/v1/markets/carrefour
-```
-
-**Resposta:**
-```json
-{
-  "id": "carrefour",
-  "name": "Carrefour",
-  "base_url": "https://mercado.carrefour.com.br",
-  "status": "active",
-  "enabled": true,
-  "requires_cep": false,
-  "supports_pagination": true,
-  "max_pages": 5,
-  "rate_limit": 8,
-  "circuit_breaker": {
-    "state": "closed",
-    "failure_count": 0,
-    "success_count": 45
-  }
-}
-```
-
-### POST /api/v1/markets/{market_id}/reset
-
-Reseta o circuit breaker de um mercado.
-
-**Exemplo:**
-```
-POST /api/v1/markets/atacadao/reset
-```
-
-**Resposta:**
-```json
-{
-  "status": "success",
-  "message": "Circuit breaker do mercado atacadao resetado",
-  "market_id": "atacadao"
-}
+print(f"Total: {result.formatted_total}")
+for item in result.items:
+    print(f"{item.item_name}: {item.formatted_price}")
 ```
 
 ---
-
-## Endpoints de Lista de Compras
-
-### POST /api/v1/shopping/list
-
-Processa uma lista de compras estruturada.
-
-**Corpo da Requisicao:**
-```json
-{
-  "items": [
-    {
-      "name": "arroz 5kg",
-      "quantity": 2,
-      "unit": "un",
-      "notes": "preferencia Tio Joao"
-    },
-    {
-      "name": "feijao 1kg",
-      "quantity": 1
-    }
-  ],
-  "cep": "01310100",
-  "markets": ["carrefour", "atacadao"],
-  "budget": 100.00
-}
-```
-
-**Campos do Item:**
-
-| Campo | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| name | string | Sim | Nome do produto |
-| quantity | integer | Nao | Quantidade (padrao: 1) |
-| unit | string | Nao | Unidade (kg, L, un) |
-| notes | string | Nao | Observacoes |
-
-**Resposta:**
-```json
-{
-  "items": [
-    {
-      "query": "arroz 5kg",
-      "quantity": 2,
-      "best_offer": {
-        "name": "Arroz Tipo 1 5kg",
-        "price": 24.99,
-        "market_id": "atacadao",
-        "market_name": "Atacadao"
-      },
-      "alternatives": [...],
-      "total_price": 49.98,
-      "status": "found"
-    }
-  ],
-  "total_items": 2,
-  "items_found": 2,
-  "best_total": 57.97,
-  "budget": 100.00,
-  "within_budget": true,
-  "savings_from_comparison": 8.50,
-  "metadata": {
-    "cep": "01310100",
-    "markets_searched": ["carrefour", "atacadao"]
-  }
-}
-```
-
-### POST /api/v1/shopping/text
-
-Processa lista de compras em texto livre (um item por linha).
-
-**Corpo da Requisicao:**
-```json
-{
-  "text": "2x arroz 5kg\nfeijao 1kg\n3 pacotes de cafe\noleo 900ml",
-  "cep": "01310100",
-  "markets": null,
-  "budget": 150.00
-}
-```
-
-**Formatos de texto suportados:**
-- "arroz 5kg" - item simples
-- "2x leite 1L" - quantidade com x
-- "3 pacotes de cafe" - quantidade por extenso
-- "feijao" - item sem especificacao de quantidade
-
-### POST /api/v1/shopping/optimize
-
-Analisa diferentes estrategias de compra para otimizar gastos.
-
-**Corpo da Requisicao:** Mesmo do endpoint `/shopping/list`
-
-**Resposta:**
-```json
-{
-  "items": [...],
-  "strategies": [
-    {
-      "name": "best_price",
-      "description": "Melhor preco para cada item (pode exigir multiplos mercados)",
-      "total": 85.50,
-      "markets_count": 3,
-      "items_found": 5,
-      "items_total": 5,
-      "coverage_percent": 100.0,
-      "details": [...]
-    },
-    {
-      "name": "single_market_atacadao",
-      "description": "Tudo no Atacadao",
-      "total": 89.00,
-      "markets_count": 1,
-      "items_found": 5,
-      "items_total": 5,
-      "coverage_percent": 100.0,
-      "details": [...]
-    }
-  ],
-  "recommended": "best_price",
-  "potential_savings": 12.50,
-  "metadata": {
-    "cep": "01310100",
-    "total_items": 5,
-    "items_found": 5,
-    "strategies_analyzed": 6
-  }
-}
-```
-
-### POST /api/v1/shopping/quick
-
-Versao rapida para bots - retorna apenas totais.
-
-**Corpo da Requisicao:** Mesmo do endpoint `/shopping/text`
-
-**Resposta:**
-```json
-{
-  "success": true,
-  "total_items": 5,
-  "items_found": 5,
-  "total": 85.50,
-  "by_market": {
-    "Atacadao": 35.00,
-    "Carrefour": 28.50,
-    "GBarbosa": 22.00
-  },
-  "not_found": [],
-  "within_budget": true
-}
-```
-
----
-
-## Headers de Requisicao
-
-### Autenticacao e Identificacao
-
-| Header | Descricao |
-|---|---|
-| X-User-ID | Identificador do usuario (para rate limiting) |
-| X-Telegram-User | ID do usuario Telegram (alternativa ao X-User-ID) |
-
-### Headers de Resposta (Rate Limiting)
-
-| Header | Descricao |
-|---|---|
-| X-RateLimit-Limit | Limite de requisicoes por minuto |
-| X-RateLimit-Remaining | Requisicoes restantes |
-| X-RateLimit-Reset | Segundos ate reset do contador |
-| Retry-After | Segundos para aguardar (quando limite excedido) |
-
----
-
-## Codigos de Resposta HTTP
-
-| Codigo | Descricao |
-|---|---|
-| 200 | Sucesso |
-| 400 | Requisicao invalida (parametros incorretos) |
-| 404 | Recurso nao encontrado |
-| 422 | Erro de validacao |
-| 429 | Rate limit excedido |
-| 500 | Erro interno do servidor |
-
----
-
-## Sistema de Ranking
-
-O sistema utiliza ranking fuzzy para priorizar resultados relevantes.
-
-### Regra Principal
-
-A primeira palavra da busca deve ser igual a primeira palavra do titulo do produto para ser considerado relevante.
-
-**Exemplo:**
-- Busca: "Arroz 5kg"
-- "Arroz Tipo 1 Tio Joao 5kg" - Relevante (primeira palavra = "arroz")
-- "Feijao Carioca 1kg" - Nao relevante (primeira palavra diferente)
-
-### Estrategias de Ranking
-
-| Estrategia | Descricao |
-|---|---|
-| PRICE_FIRST | Prioriza menor preco entre os relevantes |
-| RELEVANCE_FIRST | Prioriza maior score de relevancia |
-| BALANCED | Equilibrio entre preco e relevancia |
-
-### Scores
-
-- **relevance_score**: 0.0 a 1.0 (baseado no match da primeira palavra e quantidade)
-- **price_score**: 0.0 a 1.0 (normalizado entre menor e maior preco)
-- **final_score**: Combinacao ponderada dos dois scores
-
----
-
-## Normalizacao de Precos
-
-O sistema normaliza precos para unidades base, permitindo comparacao justa.
-
-### Unidades Suportadas
-
-| Categoria | Unidades | Unidade Base |
-|---|---|---|
-| Massa | kg, g, mg | kg |
-| Volume | L, ml | L |
-| Contagem | un, pack, dz | un |
-
-### Exemplos de Normalizacao
-
-- "Arroz 5kg por R$ 24,99" = R$ 5,00/kg
-- "Leite 1L por R$ 4,99" = R$ 4,99/L
-- "Oleo 900ml por R$ 8,99" = R$ 9,99/L
-- "Cerveja 12x350ml por R$ 35,99" = R$ 8,57/L
-
----
-
-## Circuit Breaker
-
-O sistema implementa circuit breaker para proteger contra falhas em cascata.
-
-### Parametros de Configuracao
-
-| Parametro | Padrao | Descricao |
-|---|---|---|
-| failure_threshold | 3 | Falhas para abrir o circuito |
-| recovery_timeout_seconds | 60 | Tempo para tentar recuperacao |
-| half_open_max_calls | 1 | Chamadas de teste em half_open |
-
-### Comportamento
-
-1. **CLOSED**: Requisicoes fluem normalmente
-2. **OPEN**: Requisicoes sao bloqueadas apos atingir threshold de falhas
-3. **HALF_OPEN**: Apos timeout, permite uma requisicao de teste
-4. Se teste bem-sucedido, volta para CLOSED
-5. Se teste falhar, volta para OPEN
-
----
-
-## Cache
-
-O sistema utiliza Redis para cache de resultados.
-
-### Configuracao
-
-| Parametro | Padrao | Descricao |
-|---|---|---|
-| cache_enabled | true | Habilita/desabilita cache |
-| cache_ttl_seconds | 300 | Tempo de vida do cache (5 minutos) |
-| cache_prefix | price_tracker: | Prefixo das chaves |
-
-### Chave de Cache
-
-A chave e gerada a partir de:
-- Termo de busca (normalizado)
-- CEP (ou "all")
-- Lista de mercados (ou "all")
-
----
-
-## Rate Limiting
-
-### Limites Padrao
-
-| Tipo | Limite |
-|---|---|
-| Por usuario | 60 requisicoes/minuto |
-| Por IP (sem identificacao) | 120 requisicoes/minuto |
-| Por mercado (scraping) | 8-10 requisicoes/minuto |
-
-### Resposta de Rate Limit Excedido
-
-```json
-{
-  "error": "rate_limit_exceeded",
-  "message": "Limite de requisicoes excedido. Tente novamente em 45 segundos.",
-  "retry_after": 45
-}
-```
-
----
-
-## Exemplos de Uso
-
-### Busca Simples com cURL
-
-```bash
-curl -X GET "http://localhost:8000/api/v1/search?q=arroz%205kg" \
-  -H "X-User-ID: usuario123"
-```
-
-### Busca Avancada
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/search" \
-  -H "Content-Type: application/json" \
-  -H "X-User-ID: usuario123" \
-  -d '{
-    "query": "arroz tipo 1 5kg",
-    "cep": "01310100",
-    "markets": ["carrefour", "atacadao"],
-    "max_pages": 2
-  }'
-```
-
-### Lista de Compras
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/shopping/text" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "arroz 5kg\nfeijao 1kg\noleo 900ml\nleite 1L",
-    "cep": "01310100",
-    "budget": 100.00
-  }'
-```
-
-### Comparacao de Precos
-
-```bash
-curl -X GET "http://localhost:8000/api/v1/search/compare?q=leite%20integral%201L"
-```
-
----
-
-## Variaveis de Ambiente
-
-| Variavel | Padrao | Descricao |
-|---|---|---|
-| ENV | development | Ambiente (development, production, testing) |
-| DEBUG | false | Modo debug |
-| LOG_LEVEL | INFO | Nivel de log |
-| API_HOST | 0.0.0.0 | Host da API |
-| API_PORT | 8000 | Porta da API |
-| REDIS_URL | redis://localhost:6379/0 | URL do Redis |
-| CACHE_TTL_SECONDS | 300 | TTL do cache |
-| RATE_LIMIT_REQUESTS_PER_MINUTE | 60 | Limite de requisicoes |
-
----
-
-## Executando a API
-
-### Desenvolvimento
-
-```bash
-python -m src.api.main
-```
-
-### Producao (com Uvicorn)
-
-```bash
-uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
 
 ### CLI
 
-O sistema tambem oferece interface de linha de comando:
+Interface de linha de comando usando Typer e Rich para formatação.
+
+#### Comandos Disponíveis
+
+|Comando|Descrição|
+|---|---|
+|search|Busca produtos com ranking|
+|smart-search|Busca inteligente com detalhes de ranking|
+|compare|Compara preços entre mercados|
+|markets|Lista mercados disponíveis|
+|stats|Exibe estatísticas de coleta|
+|history|Mostra histórico de preços|
+|export|Exporta dados para arquivo|
+
+#### Exemplos
 
 ```bash
 # Busca simples
-python -m src.cli search "arroz 5kg"
+price-collector search "arroz 5kg"
 
 # Busca com CEP
-python -m src.cli search "arroz 5kg" --cep 01310100
+price-collector search "leite 1L" --cep 01310100
 
-# Comparacao de precos
-python -m src.cli compare "leite integral 1L"
+# Comparação de preços
+price-collector compare "banana prata"
 
-# Listar mercados
-python -m src.cli markets
-
-# Estatisticas
-python -m src.cli stats --days 30
+# Exportar resultados
+price-collector export resultado.csv --format csv
 ```
+
+---
+
+## Fluxo de Execução
+
+### Busca Simples
+
+1. Usuário envia requisição de busca
+2. SearchService verifica cache (L1 -> L2)
+3. Se cache miss, executa busca nos scrapers
+4. Scrapers coletam dados em paralelo
+5. Pipeline processa e normaliza dados
+6. Ranker ordena por relevância e preço
+7. Resultado é cacheado e retornado
+
+### Busca com Early Return
+
+1. Tasks são criadas para todos os mercados
+2. Conforme cada mercado completa, resultados são agregados
+3. Quando atingir número mínimo de resultados, retorna imediatamente
+4. Tasks pendentes são canceladas
+
+---
+
+## Dependências Principais
+
+|Pacote|Versão|Uso|
+|---|---|---|
+|httpx|>=0.27.0|Cliente HTTP async com HTTP/2|
+|playwright|>=1.40.0|Automação de browser|
+|pydantic|>=2.5.0|Validação de dados|
+|fastapi|-|Framework web (via uvicorn)|
+|structlog|>=23.2.0|Logging estruturado|
+|pandas|>=2.1.0|Manipulação de dados|
+|pyarrow|>=14.0.0|Suporte a Parquet|
+|redis|-|Cache distribuído|
+|aiosqlite|>=0.19.0|SQLite assíncrono|
+|tenacity|>=8.2.0|Retry com backoff|
+|typer|>=0.9.0|CLI|
+|rich|>=13.7.0|Formatação de terminal|
+
+---
+
+## Considerações de Performance
+
+### Otimizações Implementadas
+
+1. **Connection Pooling**: Reutilização de conexões HTTP por mercado
+2. **HTTP/2 Multiplexing**: Múltiplas requisições na mesma conexão
+3. **Cache Multi-camada**: Reduz latência de 5ms para 0.1ms
+4. **Early Return**: Retorna assim que tiver resultados suficientes
+5. **Streaming**: Processa resultados conforme chegam
+6. **Compressão**: Suporte a gzip, brotli e deflate
+
+### Limites e Configurações
+
+|Configuração|Valor|Descrição|
+|---|---|---|
+|Timeout global|10s|Tempo máximo para busca completa|
+|Timeout por mercado|8s|Tempo máximo por scraper|
+|Min results early return|5|Resultados mínimos para retorno antecipado|
+|Max concurrent markets|5|Mercados simultâneos|
+|Cache L1 max size|1000|Entradas em memória|
+|Rate limit padrão|10 req/min|Requisições por mercado|
+
+---
+
+## Tratamento de Erros
+
+O sistema implementa uma hierarquia de exceções customizadas:
+
+```
+PriceCollectorError
+    ├── ScraperError
+    │       ├── NetworkError
+    │       ├── RateLimitError
+    │       ├── BlockedError
+    │       └── HTMLChangedError
+    ├── ParsingError
+    ├── NormalizationError
+    ├── StorageError
+    │       ├── DatabaseError
+    │       └── FileStorageError
+    └── ValidationError
+```
+
+Cada exceção carrega contexto adicional como market_id, URL, e detalhes específicos do erro.
+
+---
+
+## Extensibilidade
+
+### Adicionando Novo Mercado
+
+1. Criar configuração em `config/markets.py`
+2. Implementar scraper herdando de `BaseAPIScraper` ou `VTEXOptimizedScraper`
+3. Registrar no `SCRAPER_REGISTRY` em `src/scrapers/__init__.py`
+4. Adicionar rate limit em `config/settings.py`
+
+### Adicionando Novo Backend de Storage
+
+1. Criar classe herdando de `BaseStorage`
+2. Implementar métodos abstratos
+3. Registrar no `StorageManager`
