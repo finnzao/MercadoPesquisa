@@ -1,4 +1,4 @@
-
+# src/services/search_service.py
 """
 Serviço de Busca - Orquestrador Principal.
 
@@ -13,18 +13,24 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Any, Tuple, List
+from typing import Optional, Tuple, List
 from uuid import uuid4
 
 from config.settings import get_settings
 from config.logging_config import LoggerMixin
-from config.markets import MARKETS_CONFIG
 
 from src.core.models import PriceOffer
 from src.pipeline import ProcessingPipeline
 from src.ranking import ResultRanker
 from src.scrapers import ScraperManager
-from src.services.cache_service import CacheService, RateLimiter, get_cache_service, get_rate_limiter
+
+# Importa do novo módulo de cache
+from src.services.cache import (
+    CacheService,
+    RateLimiter,
+    get_cache_service,
+    get_rate_limiter,
+)
 
 
 class CircuitState(str, Enum):
@@ -222,11 +228,13 @@ class SearchService(LoggerMixin):
             # 1. Verifica rate limit do usuário
             if request.user_id:
                 rate_limiter = await self._get_rate_limiter()
-                allowed, remaining, ttl = await rate_limiter.check_user(request.user_id)
+                result = await rate_limiter.check_user(request.user_id)
                 
-                if not allowed:
+                if not result.allowed:
                     response.status = "error"
-                    response.errors.append(f"Rate limit excedido. Tente novamente em {ttl}s.")
+                    response.errors.append(
+                        f"Rate limit excedido. Tente novamente em {result.reset_in_seconds}s."
+                    )
                     return response
             
             # 2. Verifica cache (L1 -> L2)
@@ -290,6 +298,15 @@ class SearchService(LoggerMixin):
             
             # 6. Cacheia resultados (se teve sucesso)
             if response.status in ("success", "partial") and response.results:
+                # Detecta se há itens promocionais
+                has_promo = any(
+                    r.get("is_promotional", False) 
+                    for r in response.results
+                )
+                
+                # Calcula popularidade simplificada
+                query_popularity = min(response.total_results / 100, 1.0)
+                
                 await cache.set_search_result(
                     query=request.query,
                     cep=request.cep,
@@ -300,6 +317,8 @@ class SearchService(LoggerMixin):
                         "best_offer": response.best_offer,
                         "markets_searched": response.markets_searched,
                     },
+                    is_promotional=has_promo,
+                    query_popularity=query_popularity,
                 )
             
         except Exception as e:
@@ -527,6 +546,7 @@ class SearchService(LoggerMixin):
                 "image_url": offer.image_url,
                 "is_relevant": ro.is_relevant,
                 "is_comparable": offer.is_comparable,
+                "is_promotional": getattr(offer, 'is_promotional', False),
                 "relevance_score": round(ro.relevance_score, 2),
                 "price_score": round(ro.price_score, 2),
                 "final_score": round(ro.final_score, 2),
@@ -551,11 +571,21 @@ class SearchService(LoggerMixin):
             return True
         return False
     
-    def get_cache_stats(self) -> dict:
+    async def get_cache_stats(self) -> dict:
         """Retorna estatísticas do cache."""
-        if self._cache:
-            return self._cache.get_stats()
-        return {}
+        try:
+            cache = await self._get_cache()
+            return cache.get_stats()
+        except RuntimeError:
+            return {"error": "Cache não inicializado"}
+    
+    async def get_rate_limiter_stats(self) -> dict:
+        """Retorna estatísticas do rate limiter."""
+        try:
+            rate_limiter = await self._get_rate_limiter()
+            return await rate_limiter.get_stats()
+        except Exception as e:
+            return {"error": str(e)}
 
 
 # Instância global para uso simplificado
@@ -568,3 +598,9 @@ async def get_search_service() -> SearchService:
     if _search_service is None:
         _search_service = SearchService()
     return _search_service
+
+
+async def reset_search_service() -> None:
+    """Reseta a instância global do serviço de busca."""
+    global _search_service
+    _search_service = None

@@ -1,5 +1,8 @@
+# src/services/cache/dynamic_ttl.py
 """
-TTL (Time To Live) do cache baseado em múltiplos fatores:
+TTL (Time To Live) Dinâmico para Cache.
+
+Calcula TTL baseado em múltiplos fatores:
 - Período do dia (madrugada, manhã, tarde, noite)
 - Dia da semana (sexta tem mais promoções, domingo menos atualizações)
 - Mercado específico (alguns atualizam mais frequentemente)
@@ -26,11 +29,11 @@ class TTLConfig:
     """Configurações de TTL."""
     
     # TTL mínimo e máximo em segundos
-    min_ttl: int = 3600           # 1 hora
-    max_ttl: int = 21.600         # 6 horas
+    min_ttl: int = 60             # 1 minuto
+    max_ttl: int = 3600           # 1 hora
     
     # TTL padrão quando não há fatores específicos
-    default_ttl: int = 14400      # 4 horas
+    default_ttl: int = 300        # 5 minutos
 
 
 class DynamicTTLCalculator:
@@ -43,14 +46,32 @@ class DynamicTTLCalculator:
     3. Mercado - alguns mercados atualizam mais frequentemente
     4. Promoção - produtos em promoção precisam de TTL menor
     5. Popularidade - buscas populares podem ter TTL ligeiramente maior
+    
+    Exemplo de uso:
+        calculator = DynamicTTLCalculator()
+        
+        # TTL para busca normal
+        ttl = calculator.calculate_ttl(market_id="carrefour")
+        
+        # TTL para produto promocional
+        ttl = calculator.calculate_ttl(
+            market_id="atacadao",
+            is_promotional=True
+        )
+        
+        # TTL para múltiplos mercados
+        ttl = calculator.calculate_ttl_for_search(
+            query="arroz",
+            market_ids=["carrefour", "atacadao"]
+        )
     """
     
     # TTL base por período do dia (em segundos)
     PERIOD_TTL = {
-        TimePeriod.OVERNIGHT: 14.400,    # 4 horas - baixa atividade, cache longo
-        TimePeriod.MORNING: 3600,       # 1 hora - período de atualizações de preço
-        TimePeriod.AFTERNOON: 7.200,     # 2 horas - estabilidade média
-        TimePeriod.EVENING: 10.800,       # 3 horas - preços geralmente estáveis
+        TimePeriod.OVERNIGHT: 600,     # 10 min - baixa atividade
+        TimePeriod.MORNING: 180,       # 3 min - período de atualizações
+        TimePeriod.AFTERNOON: 300,     # 5 min - estabilidade média
+        TimePeriod.EVENING: 420,       # 7 min - preços geralmente estáveis
     }
     
     # Multiplicadores por dia da semana (0=segunda, 6=domingo)
@@ -76,6 +97,8 @@ class DynamicTTLCalculator:
         "redemix": 1.1,           # Regional, menos atualizações
         "mercantil": 1.1,         # Regional
         "hiperideal": 1.1,        # Regional
+        "extra": 1.0,             # Padrão
+        "assai": 0.85,            # Atacado, atualiza frequentemente
     }
     
     def __init__(self, config: Optional[TTLConfig] = None):
@@ -111,7 +134,7 @@ class DynamicTTLCalculator:
         market_id: Optional[str] = None,
         is_promotional: bool = False,
         query_popularity: float = 0.0,
-        custom_base_ttl: Optional[int] = None
+        custom_base_ttl: Optional[int] = None,
     ) -> int:
         """
         Calcula TTL dinâmico baseado em múltiplos fatores.
@@ -128,7 +151,7 @@ class DynamicTTLCalculator:
         Exemplo:
             # Busca normal no Carrefour às 10h de uma sexta-feira
             ttl = calculator.calculate_ttl(market_id="carrefour")
-            # Resultado: ~210 segundos (5min base * 0.7 sexta)
+            # Resultado: ~126 segundos (180s base * 0.7 sexta)
             
             # Produto promocional no Atacadão
             ttl = calculator.calculate_ttl(
@@ -149,7 +172,9 @@ class DynamicTTLCalculator:
         day_multiplier = self.DAY_MULTIPLIERS.get(weekday, 1.0)
         
         # 3. Aplica multiplicador do mercado
-        market_multiplier = self.MARKET_MULTIPLIERS.get(market_id, 1.0) if market_id else 1.0
+        market_multiplier = 1.0
+        if market_id:
+            market_multiplier = self.MARKET_MULTIPLIERS.get(market_id, 1.0)
         
         # 4. Aplica multiplicador de promoção
         # Produtos em promoção precisam de cache mais curto (mudam rápido)
@@ -179,7 +204,7 @@ class DynamicTTLCalculator:
         query: str,
         market_ids: Optional[list[str]] = None,
         has_promotional_items: bool = False,
-        query_popularity: float = 0.0
+        query_popularity: float = 0.0,
     ) -> int:
         """
         Calcula TTL para uma busca completa (múltiplos mercados).
@@ -199,7 +224,7 @@ class DynamicTTLCalculator:
         if not market_ids:
             return self.calculate_ttl(
                 is_promotional=has_promotional_items,
-                query_popularity=query_popularity
+                query_popularity=query_popularity,
             )
         
         # Calcula TTL para cada mercado e usa o menor
@@ -207,7 +232,7 @@ class DynamicTTLCalculator:
             self.calculate_ttl(
                 market_id=market_id,
                 is_promotional=has_promotional_items,
-                query_popularity=query_popularity
+                query_popularity=query_popularity,
             )
             for market_id in market_ids
         ]
@@ -218,7 +243,7 @@ class DynamicTTLCalculator:
         self,
         market_id: Optional[str] = None,
         is_promotional: bool = False,
-        query_popularity: float = 0.0
+        query_popularity: float = 0.0,
     ) -> dict:
         """
         Retorna informações detalhadas sobre o cálculo do TTL.
@@ -239,20 +264,22 @@ class DynamicTTLCalculator:
         final_ttl = self.calculate_ttl(
             market_id=market_id,
             is_promotional=is_promotional,
-            query_popularity=query_popularity
+            query_popularity=query_popularity,
         )
+        
+        weekday_names = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
         
         return {
             "period": period.value,
             "weekday": weekday,
-            "weekday_name": ["seg", "ter", "qua", "qui", "sex", "sab", "dom"][weekday],
+            "weekday_name": weekday_names[weekday],
             "base_ttl_seconds": base_ttl,
             "multipliers": {
                 "day": day_multiplier,
                 "market": market_multiplier,
                 "promotional": promo_multiplier,
-                "popularity": round(popularity_multiplier, 2)
+                "popularity": round(popularity_multiplier, 2),
             },
             "final_ttl_seconds": final_ttl,
-            "final_ttl_formatted": f"{final_ttl // 60}m {final_ttl % 60}s"
+            "final_ttl_formatted": f"{final_ttl // 60}m {final_ttl % 60}s",
         }

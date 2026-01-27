@@ -1,3 +1,4 @@
+# src/services/cache/cache_service.py
 """
 Serviço de Cache com TTL Dinâmico.
 
@@ -9,21 +10,14 @@ import asyncio
 import json
 import hashlib
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List, Tuple
-from dataclasses import dataclass, field
+from typing import Any, Optional, List
+from dataclasses import dataclass
 from collections import OrderedDict
+
 import structlog
 
-try:
-    import redis.asyncio as redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-
-try:
-    from .dynamic_ttl import DynamicTTLCalculator, TTLConfig
-except ImportError:
-    from dynamic_ttl import DynamicTTLCalculator, TTLConfig
+from .dynamic_ttl import DynamicTTLCalculator, TTLConfig
+from .redis_client import RedisClient, get_redis_client
 
 logger = structlog.get_logger()
 
@@ -217,31 +211,36 @@ class CacheService:
     def __init__(
         self,
         redis_url: Optional[str] = None,
+        redis_password: Optional[str] = None,
         l1_max_size: int = 1000,
         l1_default_ttl: int = 60,
         l2_default_ttl: int = 300,
-        ttl_config: Optional[TTLConfig] = None
+        ttl_config: Optional[TTLConfig] = None,
+        cache_prefix: str = "preco:",
     ):
         """
         Inicializa o serviço de cache.
         
         Args:
             redis_url: URL de conexão do Redis (None = apenas L1)
+            redis_password: Senha do Redis
             l1_max_size: Tamanho máximo do cache L1
             l1_default_ttl: TTL padrão do L1 em segundos
             l2_default_ttl: TTL padrão do L2 em segundos
             ttl_config: Configurações customizadas de TTL dinâmico
+            cache_prefix: Prefixo para chaves no Redis
         """
         self.redis_url = redis_url
+        self.redis_password = redis_password
         self.l1_default_ttl = l1_default_ttl
         self.l2_default_ttl = l2_default_ttl
+        self.cache_prefix = cache_prefix
         
         # Cache L1 (memória)
         self._l1 = LRUCache(max_size=l1_max_size)
         
         # Cache L2 (Redis)
-        self._redis: Optional[redis.Redis] = None
-        self._redis_available = False
+        self._redis: Optional[RedisClient] = None
         
         # Calculador de TTL dinâmico
         self._ttl_calculator = DynamicTTLCalculator(config=ttl_config)
@@ -255,25 +254,24 @@ class CacheService:
     async def initialize(self):
         """Inicializa conexões e tasks em background."""
         # Tenta conectar ao Redis
-        if self.redis_url and REDIS_AVAILABLE:
+        if self.redis_url:
             try:
-                self._redis = redis.from_url(
-                    self.redis_url,
-                    encoding="utf-8",
-                    decode_responses=True
+                self._redis = await get_redis_client(
+                    redis_url=self.redis_url,
+                    redis_password=self.redis_password,
+                    cache_prefix=self.cache_prefix,
                 )
-                # Testa conexão
-                await self._redis.ping()
-                self._redis_available = True
-                logger.info("redis_connected", url=self.redis_url)
+                logger.info(
+                    "cache_service_redis_connected",
+                    url=self.redis_url,
+                )
             except Exception as e:
                 logger.warning(
-                    "redis_connection_failed",
+                    "cache_service_redis_failed",
                     error=str(e),
-                    message="Usando apenas cache L1"
+                    message="Usando apenas cache L1",
                 )
                 self._redis = None
-                self._redis_available = False
         
         # Inicia task de limpeza periódica
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -281,7 +279,7 @@ class CacheService:
         logger.info(
             "cache_service_initialized",
             l1_max_size=self._l1.max_size,
-            l2_available=self._redis_available
+            l2_available=self._redis is not None and self._redis.is_connected,
         )
     
     async def close(self):
@@ -293,16 +291,14 @@ class CacheService:
             except asyncio.CancelledError:
                 pass
         
-        if self._redis:
-            await self._redis.close()
-        
+        # Nota: não fechamos o redis_client aqui pois é compartilhado
         logger.info("cache_service_closed")
     
     def _generate_cache_key(
         self,
         query: str,
         cep: Optional[str] = None,
-        market_ids: Optional[List[str]] = None
+        market_ids: Optional[List[str]] = None,
     ) -> str:
         """
         Gera chave única para cache baseada nos parâmetros de busca.
@@ -348,7 +344,7 @@ class CacheService:
         self._stats.l1_misses += 1
         
         # 2. Tenta L2 (Redis)
-        if self._redis_available and self._redis:
+        if self._redis and self._redis.is_connected:
             try:
                 data = await self._redis.get(key)
                 if data:
@@ -378,7 +374,7 @@ class CacheService:
         market_ids: Optional[List[str]] = None,
         is_promotional: bool = False,
         query_popularity: float = 0.0,
-        custom_ttl: Optional[int] = None
+        custom_ttl: Optional[int] = None,
     ) -> bool:
         """
         Armazena valor no cache com TTL dinâmico.
@@ -403,27 +399,27 @@ class CacheService:
                 query="",
                 market_ids=market_ids,
                 has_promotional_items=is_promotional,
-                query_popularity=query_popularity
+                query_popularity=query_popularity,
             )
         else:
             ttl = self._ttl_calculator.calculate_ttl(
                 market_id=market_id,
                 is_promotional=is_promotional,
-                query_popularity=query_popularity
+                query_popularity=query_popularity,
             )
         
         # Log do TTL calculado
         ttl_info = self._ttl_calculator.get_ttl_info(
             market_id=market_id or (market_ids[0] if market_ids else None),
             is_promotional=is_promotional,
-            query_popularity=query_popularity
+            query_popularity=query_popularity,
         )
         
         logger.debug(
             "cache_ttl_calculated",
             key=key,
             ttl_seconds=ttl,
-            ttl_info=ttl_info
+            ttl_info=ttl_info,
         )
         
         self._stats.total_sets += 1
@@ -435,17 +431,17 @@ class CacheService:
             value=value,
             ttl=l1_ttl,
             market_id=market_id,
-            is_promotional=is_promotional
+            is_promotional=is_promotional,
         )
         
         if evicted:
             self._stats.evictions += 1
         
         # Armazena em L2 (Redis)
-        if self._redis_available and self._redis:
+        if self._redis and self._redis.is_connected:
             try:
                 serialized = json.dumps(value, default=str)
-                await self._redis.setex(key, ttl, serialized)
+                await self._redis.set(key, serialized, ttl=ttl)
                 logger.debug("cache_l2_set", key=key, ttl=ttl)
             except Exception as e:
                 logger.error("cache_l2_set_error", key=key, error=str(e))
@@ -458,7 +454,7 @@ class CacheService:
         value: Any,
         ttl: int,
         market_id: Optional[str] = None,
-        is_promotional: bool = False
+        is_promotional: bool = False,
     ) -> bool:
         """Armazena valor no cache L1."""
         now = datetime.now()
@@ -468,7 +464,7 @@ class CacheService:
             expires_at=now + timedelta(seconds=ttl),
             ttl_seconds=ttl,
             market_id=market_id,
-            is_promotional=is_promotional
+            is_promotional=is_promotional,
         )
         return await self._l1.set(key, entry)
     
@@ -487,10 +483,9 @@ class CacheService:
         l1_deleted = await self._l1.delete(key)
         l2_deleted = False
         
-        if self._redis_available and self._redis:
+        if self._redis and self._redis.is_connected:
             try:
-                result = await self._redis.delete(key)
-                l2_deleted = result > 0
+                l2_deleted = await self._redis.delete(key)
             except Exception as e:
                 logger.error("cache_l2_delete_error", key=key, error=str(e))
         
@@ -513,20 +508,9 @@ class CacheService:
         deleted += await self._l1.delete_pattern(pattern)
         
         # Remove de L2
-        if self._redis_available and self._redis:
+        if self._redis and self._redis.is_connected:
             try:
-                cursor = 0
-                while True:
-                    cursor, keys = await self._redis.scan(
-                        cursor=cursor,
-                        match=pattern,
-                        count=100
-                    )
-                    if keys:
-                        await self._redis.delete(*keys)
-                        deleted += len(keys)
-                    if cursor == 0:
-                        break
+                deleted += await self._redis.delete_pattern(pattern)
             except Exception as e:
                 logger.error("cache_pattern_delete_error", pattern=pattern, error=str(e))
         
@@ -554,9 +538,9 @@ class CacheService:
         """Limpa todo o cache (ambas camadas)."""
         await self._l1.clear()
         
-        if self._redis_available and self._redis:
+        if self._redis and self._redis.is_connected:
             try:
-                await self._redis.flushdb()
+                await self._redis.flush_db()
             except Exception as e:
                 logger.error("cache_clear_error", error=str(e))
         
@@ -586,15 +570,74 @@ class CacheService:
             **self._stats.to_dict(),
             "l1_size": self._l1.size(),
             "l1_max_size": self._l1.max_size,
-            "l2_available": self._redis_available
+            "l2_available": self._redis is not None and self._redis.is_connected,
         }
     
     def get_ttl_calculator(self) -> DynamicTTLCalculator:
         """Retorna o calculador de TTL para uso externo."""
         return self._ttl_calculator
+    
+    # =========================================================================
+    # Métodos de conveniência para buscas
+    # =========================================================================
+    
+    async def get_search_result(
+        self,
+        query: str,
+        cep: Optional[str] = None,
+        markets: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Obtém resultado de busca do cache.
+        
+        Args:
+            query: Termo de busca
+            cep: CEP do usuário
+            markets: Lista de mercados
+            
+        Returns:
+            Resultado cacheado ou None
+        """
+        key = self._generate_cache_key(query, cep, markets)
+        return await self.get(key)
+    
+    async def set_search_result(
+        self,
+        query: str,
+        result: dict,
+        cep: Optional[str] = None,
+        markets: Optional[List[str]] = None,
+        is_promotional: bool = False,
+        query_popularity: float = 0.0,
+    ) -> bool:
+        """
+        Armazena resultado de busca no cache.
+        
+        Args:
+            query: Termo de busca
+            result: Resultado a armazenar
+            cep: CEP do usuário
+            markets: Lista de mercados
+            is_promotional: Se há itens promocionais
+            query_popularity: Popularidade da busca
+            
+        Returns:
+            True se armazenou com sucesso
+        """
+        key = self._generate_cache_key(query, cep, markets)
+        return await self.set(
+            key=key,
+            value=result,
+            market_ids=markets,
+            is_promotional=is_promotional,
+            query_popularity=query_popularity,
+        )
 
 
+# =========================================================================
 # Singleton para uso global
+# =========================================================================
+
 _cache_service: Optional[CacheService] = None
 
 
@@ -603,20 +646,24 @@ async def get_cache_service() -> CacheService:
     global _cache_service
     
     if _cache_service is None:
-        raise RuntimeError("CacheService não inicializado. Chame init_cache_service primeiro.")
+        raise RuntimeError(
+            "CacheService não inicializado. Chame init_cache_service primeiro."
+        )
     
     return _cache_service
 
 
 async def init_cache_service(
     redis_url: Optional[str] = None,
-    **kwargs
+    redis_password: Optional[str] = None,
+    **kwargs,
 ) -> CacheService:
     """
     Inicializa o cache service global.
     
     Args:
         redis_url: URL do Redis
+        redis_password: Senha do Redis
         **kwargs: Argumentos adicionais para CacheService
         
     Returns:
@@ -624,7 +671,20 @@ async def init_cache_service(
     """
     global _cache_service
     
-    _cache_service = CacheService(redis_url=redis_url, **kwargs)
+    _cache_service = CacheService(
+        redis_url=redis_url,
+        redis_password=redis_password,
+        **kwargs,
+    )
     await _cache_service.initialize()
     
     return _cache_service
+
+
+async def close_cache_service() -> None:
+    """Fecha o cache service global."""
+    global _cache_service
+    
+    if _cache_service is not None:
+        await _cache_service.close()
+        _cache_service = None
