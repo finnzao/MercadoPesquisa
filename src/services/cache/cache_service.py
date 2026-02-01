@@ -577,9 +577,9 @@ class CacheService:
         """Retorna o calculador de TTL para uso externo."""
         return self._ttl_calculator
     
-    # =========================================================================
+
     # Métodos de conveniência para buscas
-    # =========================================================================
+
     
     async def get_search_result(
         self,
@@ -634,9 +634,7 @@ class CacheService:
         )
 
 
-# =========================================================================
 # Singleton para uso global
-# =========================================================================
 
 _cache_service: Optional[CacheService] = None
 

@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from src.core.models import (
     RawProduct,
-    NormalizedProduct,
     PriceOffer,
     QuantityInfo,
     SearchResult,
@@ -77,7 +76,8 @@ class TestQuantityInfo:
             raw_text="12x350ml",
         )
         
-        assert qty.total_base_value == 4.2  # 0.35 * 12
+        # Usar pytest.approx para comparação de floats
+        assert qty.total_base_value == pytest.approx(4.2)  # 0.35 * 12
     
     def test_sem_multiplicador(self):
         """Testa que multiplicador padrão é 1."""
@@ -90,7 +90,7 @@ class TestQuantityInfo:
         )
         
         assert qty.multiplier == 1
-        assert qty.total_base_value == 5.0
+        assert qty.total_base_value == pytest.approx(5.0)
 
 
 class TestPriceOffer:

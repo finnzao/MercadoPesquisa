@@ -185,7 +185,7 @@ async def search_item(
         request = SearchRequest(
             query=item.name,
             cep=cep,
-            markets=markets or settings.enabled_markets,
+            markets=markets or settings.mercados_enabled,
             max_pages=1
         )
         
@@ -427,7 +427,7 @@ async def process_shopping_list(
         savings_from_comparison=round(savings, 2),
         metadata={
             "cep": data.cep,
-            "markets_searched": markets or settings.enabled_markets
+            "markets_searched": markets or settings.mercados_enabled
         }
     )
 
@@ -494,7 +494,7 @@ async def process_shopping_text(
         savings_from_comparison=round(savings, 2),
         metadata={
             "cep": data.cep,
-            "markets_searched": markets or settings.enabled_markets,
+            "markets_searched": markets or settings.mercados_enabled,
             "parsed_items": len(items)
         }
     )

@@ -1,13 +1,3 @@
-"""
-Endpoints bots (WhatsApp/Telegram).
-
-Características:
-- Timeout agressivo (5 segundos)
-- Early return com poucos resultados
-- Resposta simplificada
-- Cache agressivo
-"""
-
 import asyncio
 from typing import Optional
 
@@ -248,12 +238,18 @@ async def fast_multi_search(
 )
 async def fast_health(search_service: SearchServiceDep):
     """Verifica saúde do serviço de busca rápida."""
-    cache_stats = search_service.get_cache_stats()
+    # Obtém estatísticas do cache de forma síncrona
+    try:
+        cache_stats = await search_service.get_cache_stats()
+    except Exception:
+        cache_stats = {"error": "Cache não disponível"}
+    
+    # Obtém status dos circuit breakers (método síncrono)
     cb_status = search_service.get_circuit_breakers_status()
     
     healthy_markets = sum(
         1 for cb in cb_status.values()
-        if cb["state"] == "closed"
+        if cb.get("state") == "closed"
     )
     
     return {

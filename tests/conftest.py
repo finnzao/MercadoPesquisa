@@ -14,7 +14,6 @@ import pytest_asyncio
 
 from src.core.models import RawProduct, NormalizedProduct, PriceOffer, QuantityInfo
 from src.core.types import Unit, Availability, NormalizationStatus
-from config.markets import CARREFOUR_CONFIG, MarketConfig
 
 
 # CONFIGURAÇÃO DO ASYNCIO
@@ -22,7 +21,10 @@ from config.markets import CARREFOUR_CONFIG, MarketConfig
 @pytest.fixture(scope="session")
 def event_loop():
     """Cria event loop para testes assíncronos."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
     yield loop
     loop.close()
 
@@ -290,15 +292,81 @@ def price_offers_for_comparison(
 # FIXTURES DE CONFIGURAÇÃO
 
 @pytest.fixture
-def market_config() -> MarketConfig:
-    """Configuração de mercado para testes."""
-    return CARREFOUR_CONFIG
-
-
-@pytest.fixture
 def settings_override(temp_data_dir, temp_log_dir, monkeypatch):
     """Override de settings para testes."""
     monkeypatch.setenv("DATA_PATH", str(temp_data_dir))
     monkeypatch.setenv("LOG_PATH", str(temp_log_dir))
     monkeypatch.setenv("ENV", "testing")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+
+
+# FIXTURES PARA TESTES DE CONCORRÊNCIA E API
+
+@pytest_asyncio.fixture
+async def async_client():
+    """Cliente HTTP assíncrono para testes de API."""
+    from httpx import AsyncClient, ASGITransport
+    from unittest.mock import AsyncMock, MagicMock
+    
+    # Importa a app FastAPI
+    from src.api.main import app
+    from src.api.deps import get_search_service
+    
+    # Cria mock do SearchService
+    mock_search_service = MagicMock()
+    mock_search_service.search = AsyncMock(return_value=MagicMock(
+        query="test",
+        total_results=0,
+        offers=[],
+        search_time_ms=100,
+        markets_searched=[],
+        cache_hit=False,
+        to_dict=lambda: {
+            "query": "test",
+            "total_results": 0,
+            "offers": [],
+            "search_time_ms": 100,
+            "markets_searched": [],
+            "cache_hit": False,
+        }
+    ))
+    mock_search_service.get_cache_stats = AsyncMock(return_value={
+        "memory_cache": {"size": 0, "max_size": 1000},
+        "hit_rate": 0.0,
+    })
+    mock_search_service.get_circuit_breakers_status = MagicMock(return_value={})
+    mock_search_service.reset_circuit_breaker = MagicMock(return_value=True)
+    
+    # Override da dependência
+    app.dependency_overrides[get_search_service] = lambda: mock_search_service
+    
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    
+    # Limpa overrides
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def multiple_users() -> list[dict]:
+    """Lista de headers simulando múltiplos usuários."""
+    return [
+        {"X-User-ID": f"user_{i}", "X-Forwarded-For": f"192.168.1.{i}"}
+        for i in range(10)
+    ]
+
+
+@pytest.fixture
+def whatsapp_user() -> dict:
+    """Simula um usuário do WhatsApp Bot."""
+    return {
+        "user_id": "whatsapp_5511999999999",
+        "headers": {
+            "X-User-ID": "whatsapp_5511999999999",
+            "X-Telegram-User-ID": "",
+            "X-Forwarded-For": "10.0.0.1",
+            "User-Agent": "WhatsApp/2.23.0",
+        },
+        "phone": "5511999999999",
+    }

@@ -18,6 +18,7 @@ import structlog
 from config.settings import get_settings
 from src.api.v1.router import api_router
 from src.services.cache_service import RedisClient
+from src.services.cache import init_cache_service, get_cache_service
 
 
 settings = get_settings()
@@ -38,7 +39,20 @@ async def lifespan(app: FastAPI):
         debug=settings.debug,
     )
     
-    # Conecta ao Redis (se disponível)
+    # Inicializa o CacheService (que internamente conecta ao Redis)
+    try:
+        cache_service = await init_cache_service(
+            redis_url=settings.redis_url if hasattr(settings, 'redis_url') and settings.redis_url else None,
+            redis_password=settings.redis_password if hasattr(settings, 'redis_password') else None,
+            l1_max_size=1000,
+            l1_default_ttl=60,
+            l2_default_ttl=300,
+        )
+        logger.info("CacheService inicializado com sucesso")
+    except Exception as e:
+        logger.warning("Erro ao inicializar CacheService", error=str(e))
+    
+    # Também inicializa o RedisClient legado para compatibilidade
     try:
         redis_client = await RedisClient.get_instance()
         if redis_client.is_connected:
@@ -59,7 +73,14 @@ async def lifespan(app: FastAPI):
     # SHUTDOWN
     logger.info("Encerrando aplicação")
     
-    # Desconecta Redis
+    # Fecha CacheService
+    try:
+        cache_service = await get_cache_service()
+        await cache_service.close()
+    except Exception:
+        pass
+    
+    # Desconecta Redis legado
     try:
         redis_client = await RedisClient.get_instance()
         await redis_client.disconnect()
