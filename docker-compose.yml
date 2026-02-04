@@ -1,0 +1,111 @@
+# ===========================================
+# Docker Compose - Price Collector + WhatsApp Bot
+# ===========================================
+# 
+# Executa a API Python e o Bot WhatsApp juntos
+#
+# Uso:
+#   docker-compose up -d              # Inicia tudo
+#   docker-compose up -d api          # Apenas API
+#   docker-compose up -d whatsapp     # Apenas Bot
+#   docker-compose logs -f whatsapp   # Ver QR Code
+#   docker-compose down               # Para tudo
+#
+# ===========================================
+
+version: '3.8'
+
+services:
+  # =========================================
+  # Redis - Cache
+  # =========================================
+  redis:
+    image: redis:7-alpine
+    container_name: price-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - price-network
+
+  # =========================================
+  # API - Price Collector (FastAPI/Python)
+  # =========================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: price-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - REDIS_URL=redis://redis:6379/0
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - price-network
+
+  # =========================================
+  # WhatsApp Bot (Node.js/Baileys)
+  # =========================================
+  whatsapp:
+    build:
+      context: ./whatsapp_bot
+      dockerfile: Dockerfile
+    container_name: price-whatsapp
+    restart: unless-stopped
+    environment:
+      - API_BASE_URL=http://api:8000/api/v1
+      - API_TIMEOUT=30000
+      - DEFAULT_CEP=${DEFAULT_CEP:-01310100}
+      - BOT_NAME=${BOT_NAME:-PriceBot}
+      - BOT_PREFIX=${BOT_PREFIX:-!}
+      - RATE_LIMIT_PER_USER=${RATE_LIMIT_PER_USER:-10}
+      - ALLOWED_NUMBERS=${ALLOWED_NUMBERS:-}
+      - ADMIN_NUMBERS=${ADMIN_NUMBERS:-}
+      - LOG_LEVEL=info
+      - NODE_ENV=production
+    volumes:
+      # Persiste credenciais do WhatsApp
+      - ./whatsapp_bot/auth:/app/auth
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - price-network
+    # stdin_open e tty para ver QR Code
+    stdin_open: true
+    tty: true
+
+networks:
+  price-network:
+    driver: bridge
+
+volumes:
+  redis_data:
