@@ -1,132 +1,65 @@
-/**
- * Utilitários de formatação de mensagens para WhatsApp
- */
-
-/**
- * Formata resultado de busca rápida
- */
 export function formatFastSearchResult(result, query) {
   if (!result.found) {
-    return `❌ *Nenhum resultado encontrado para:* _${query}_\n\nTente buscar com outros termos.`;
+    return 'Nenhum resultado encontrado para: ' + query + '\n\nTente buscar com outros termos.';
   }
 
-  const lines = [
-    `🔍 *Resultado para:* _${query}_`,
-    '',
-    `📦 *${result.product}*`,
-    `💰 *Preço:* ${result.price}`,
-  ];
+  const lines = ['Resultado para: ' + query, '', result.product, 'Preco: ' + result.price];
 
   if (result.normalized_price) {
-    lines.push(`📊 *Preço/unidade:* ${result.normalized_price}`);
+    lines.push('Preco/unidade: ' + result.normalized_price);
   }
 
-  lines.push(
-    `🏪 *Mercado:* ${result.market}`,
-    '',
-    `🔗 ${result.url}`,
-  );
+  lines.push('Mercado: ' + result.market, '', result.url);
 
   if (result.total_results > 1) {
-    lines.push('', `_Encontrados ${result.total_results} resultados_`);
+    lines.push('', 'Encontrados ' + result.total_results + ' resultados');
   }
 
   return lines.join('\n');
 }
 
-/**
- * Formata resultado de busca completa
- */
-export function formatSearchResult(result) {
-  if (result.status === 'error' || result.total_results === 0) {
-    return `❌ *Nenhum resultado encontrado para:* _${result.query}_`;
-  }
-
-  const lines = [
-    `🔍 *Busca:* _${result.query}_`,
-    `📊 *${result.total_results} resultados encontrados*`,
-    '',
-  ];
-
-  // Melhor oferta
-  if (result.best_offer) {
-    const best = result.best_offer;
-    lines.push(
-      '🏆 *MELHOR OFERTA:*',
-      `├ ${best.title}`,
-      `├ 💰 ${best.price_formatted}`,
-    );
-
-    if (best.normalized_price_formatted) {
-      lines.push(`├ 📊 ${best.normalized_price_formatted}`);
-    }
-
-    lines.push(
-      `├ 🏪 ${best.market_name}`,
-      `└ 🔗 ${best.url}`,
-      '',
-    );
-  }
-
-  // Outras ofertas (top 5)
-  const others = result.results.slice(1, 6);
-  if (others.length > 0) {
-    lines.push('📋 *Outras ofertas:*');
-
-    others.forEach((offer, idx) => {
-      const prefix = idx === others.length - 1 ? '└' : '├';
-      lines.push(
-        `${prefix} ${offer.title.substring(0, 40)}${offer.title.length > 40 ? '...' : ''}`,
-        `  ${offer.price_formatted} - ${offer.market_name}`,
-      );
-    });
-  }
-
-  return lines.join('\n');
-}
-
-/**
- * Formata comparação de preços
- */
 export function formatCompareResult(result) {
   if (!result.best_offer) {
-    return `❌ *Nenhum resultado para comparar:* _${result.query}_`;
+    return 'Nenhum resultado para comparar: ' + result.query;
   }
 
   const lines = [
-    `📊 *Comparação de preços:* _${result.query}_`,
-    `📦 *${result.total_offers} ofertas* (${result.comparable_offers} comparáveis)`,
+    'Comparacao de precos: ' + result.query,
+    result.total_offers + ' ofertas (' + result.comparable_offers + ' comparaveis)',
     '',
-    '🏆 *MELHOR PREÇO:*',
-    `├ ${result.best_offer.title}`,
-    `├ 💰 ${result.best_offer.price_formatted}`,
+    'MELHOR PRECO:',
+    '- ' + result.best_offer.title,
+    '- ' + result.best_offer.price_formatted,
   ];
 
   if (result.best_offer.normalized_price_formatted) {
-    lines.push(`├ 📊 ${result.best_offer.normalized_price_formatted}`);
+    lines.push('- ' + result.best_offer.normalized_price_formatted);
   }
 
-  lines.push(`└ 🏪 ${result.best_offer.market_name}`, '');
+  lines.push('- ' + result.best_offer.market_name, '');
 
-  // Preços por mercado
-  lines.push('🏪 *Por mercado:*');
-  
-  const markets = Object.entries(result.by_market)
-    .sort((a, b) => (a[1].min_price || Infinity) - (b[1].min_price || Infinity));
+  lines.push('Por mercado:');
 
-  markets.forEach(([marketId, data], idx) => {
-    const prefix = idx === markets.length - 1 ? '└' : '├';
-    const price = data.min_price ? `R$ ${data.min_price.toFixed(2)}` : 'N/A';
-    lines.push(`${prefix} ${data.market_name}: ${price} (${data.offers_count} ofertas)`);
+  const markets = Object.entries(result.by_market).sort(
+    (a, b) => (a[1].min_price || Infinity) - (b[1].min_price || Infinity)
+  );
+
+  markets.forEach(([marketId, data]) => {
+    const price = data.min_price ? 'R$ ' + data.min_price.toFixed(2) : 'N/A';
+    lines.push('- ' + data.market_name + ': ' + price + ' (' + data.offers_count + ' ofertas)');
   });
 
-  // Economia potencial
   if (result.potential_savings?.length > 0) {
-    lines.push('', '💰 *Economia potencial:*');
-    result.potential_savings.slice(0, 3).forEach((saving, idx) => {
-      const prefix = idx === result.potential_savings.length - 1 ? '└' : '├';
+    lines.push('', 'Economia potencial:');
+    result.potential_savings.slice(0, 3).forEach((saving) => {
       lines.push(
-        `${prefix} vs ${saving.compared_market}: R$ ${saving.savings_absolute.toFixed(2)} (${saving.savings_percentage.toFixed(1)}%)`
+        '- vs ' +
+          saving.compared_market +
+          ': R$ ' +
+          saving.savings_absolute.toFixed(2) +
+          ' (' +
+          saving.savings_percentage.toFixed(1) +
+          '%)'
       );
     });
   }
@@ -134,210 +67,171 @@ export function formatCompareResult(result) {
   return lines.join('\n');
 }
 
-/**
- * Formata resultado de busca múltipla (lista de compras)
- */
 export function formatMultiSearchResult(result) {
   const lines = [];
 
   if (result.mode === 'best_per_item') {
     lines.push(
-      '🛒 *LISTA DE COMPRAS*',
+      'LISTA DE COMPRAS',
       '',
-      `📊 *Resumo:*`,
-      `├ Itens buscados: ${result.summary.total_items}`,
-      `├ Encontrados: ${result.summary.items_found}`,
-      `├ Não encontrados: ${result.summary.items_not_found}`,
-      `└ 💰 *Total estimado: ${result.summary.estimated_total_formatted}*`,
-      '',
+      'Resumo:',
+      '- Itens buscados: ' + result.summary.total_items,
+      '- Encontrados: ' + result.summary.items_found,
+      '- Nao encontrados: ' + result.summary.items_not_found,
+      '- Total estimado: ' + result.summary.estimated_total_formatted,
+      ''
     );
 
     if (result.summary.markets_count > 1) {
-      lines.push(
-        `⚠️ _Preços de ${result.summary.markets_count} mercados diferentes_`,
-        '',
-      );
+      lines.push('Precos de ' + result.summary.markets_count + ' mercados diferentes', '');
     }
 
-    lines.push('📋 *Detalhes:*');
+    lines.push('Detalhes:');
 
-    result.items_results.forEach((item, idx) => {
-      const prefix = idx === result.items_results.length - 1 ? '└' : '├';
-
+    result.items_results.forEach((item) => {
       if (item.status === 'found' && item.best_offer) {
         lines.push(
-          `${prefix} ✅ ${item.query}`,
-          `   ${item.best_offer.price_formatted} - ${item.best_offer.market_name}`,
+          '- [OK] ' + item.query,
+          '  ' + item.best_offer.price_formatted + ' - ' + item.best_offer.market_name
         );
       } else {
-        lines.push(`${prefix} ❌ ${item.query} - não encontrado`);
+        lines.push('- [X] ' + item.query + ' - nao encontrado');
       }
     });
-
   } else {
-    // Modo single_market
-    lines.push(
-      '🏆 *MELHOR MERCADO PARA SUA LISTA*',
-      '',
-    );
+    lines.push('MELHOR MERCADO PARA SUA LISTA', '');
 
     if (result.winner) {
       lines.push(
-        `🥇 *${result.winner.market_name}*`,
-        `├ Total: ${result.winner.total_formatted}`,
-        `├ Itens encontrados: ${result.winner.items_found}/${result.summary.total_items}`,
-        `└ Cobertura: ${result.winner.coverage_percent}%`,
-        '',
+        result.winner.market_name,
+        '- Total: ' + result.winner.total_formatted,
+        '- Itens encontrados: ' + result.winner.items_found + '/' + result.summary.total_items,
+        '- Cobertura: ' + result.winner.coverage_percent + '%',
+        ''
       );
 
       if (result.winner.items_missing?.length > 0) {
         lines.push(
-          `⚠️ *Itens não encontrados:*`,
-          result.winner.items_missing.map(i => `  • ${i}`).join('\n'),
-          '',
+          'Itens nao encontrados:',
+          result.winner.items_missing.map((i) => '  - ' + i).join('\n'),
+          ''
         );
       }
     }
 
-    // Top 3 mercados
     if (result.comparison?.length > 1) {
-      lines.push('📊 *Comparação:*');
+      lines.push('Comparacao:');
       result.comparison.slice(0, 5).forEach((market, idx) => {
-        const emoji = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '  ';
+        const pos = idx + 1;
         lines.push(
-          `${emoji} ${market.market_name}: ${market.total_formatted} (${market.items_found} itens)`
+          pos +
+            '. ' +
+            market.market_name +
+            ': ' +
+            market.total_formatted +
+            ' (' +
+            market.items_found +
+            ' itens)'
         );
       });
     }
 
     if (result.savings?.note) {
-      lines.push('', `💡 ${result.savings.note}`);
+      lines.push('', result.savings.note);
     }
   }
 
   return lines.join('\n');
 }
 
-/**
- * Formata lista de mercados
- */
 export function formatMarketsList(markets) {
-  const lines = [
-    '🏪 *MERCADOS DISPONÍVEIS*',
-    '',
-  ];
+  const lines = ['MERCADOS DISPONIVEIS', ''];
 
-  const enabled = markets.filter(m => m.enabled);
-  const disabled = markets.filter(m => !m.enabled);
+  const enabled = markets.filter((m) => m.enabled);
+  const disabled = markets.filter((m) => !m.enabled);
 
-  lines.push(`✅ *Ativos (${enabled.length}):*`);
-  enabled.forEach(market => {
-    const cepIcon = market.requires_cep ? '📍' : '';
-    lines.push(`  • ${market.name} ${cepIcon}`);
+  lines.push('Ativos (' + enabled.length + '):');
+  enabled.forEach((market) => {
+    const cepIcon = market.requires_cep ? ' (requer CEP)' : '';
+    lines.push('  - ' + market.name + cepIcon);
   });
 
   if (disabled.length > 0) {
-    lines.push('', `⏸️ *Inativos (${disabled.length}):*`);
-    disabled.forEach(market => {
-      lines.push(`  • ${market.name}`);
+    lines.push('', 'Inativos (' + disabled.length + '):');
+    disabled.forEach((market) => {
+      lines.push('  - ' + market.name);
     });
   }
-
-  lines.push('', '_📍 = requer CEP_');
 
   return lines.join('\n');
 }
 
-/**
- * Formata mensagem de ajuda
- */
 export function formatHelp(prefix) {
-  return `🛒 *PRICE BOT - AJUDA*
+  return `PRICE BOT - AJUDA
 
-*Comandos de Busca:*
-• *${prefix}buscar <produto>*
+Comandos de Busca:
+${prefix}buscar <produto>
   Busca um produto nos mercados
-  _Ex: ${prefix}buscar arroz 5kg_
+  Ex: ${prefix}buscar arroz 5kg
 
-• *${prefix}comparar <produto>*
-  Compara preços entre mercados
-  _Ex: ${prefix}comparar leite integral_
+${prefix}comparar <produto>
+  Compara precos entre mercados
+  Ex: ${prefix}comparar leite integral
 
-*Lista de Compras:*
-• *${prefix}lista*
+Lista de Compras:
+${prefix}lista
   Em seguida, envie os itens (um por linha)
-  
-  _Exemplo:_
-  _arroz 5kg_
-  _feijão 1kg_
-  _leite 1L_
 
-*Configurações:*
-• *${prefix}cep <numero>*
-  Define seu CEP para melhor precisão
-  _Ex: ${prefix}cep 01310100_
+  Exemplo:
+  arroz 5kg
+  feijao 1kg
+  leite 1L
 
-• *${prefix}mercados*
-  Lista mercados disponíveis
+Configuracoes:
+${prefix}cep <numero>
+  Define seu CEP para melhor precisao
+  Ex: ${prefix}cep 01310100
 
-*Outros:*
-• *${prefix}status*
+${prefix}mercados
+  Lista mercados disponiveis
+
+Outros:
+${prefix}status
   Status do sistema
 
-*Dicas:*
-• Inclua quantidade na busca (5kg, 1L, 500ml)
-• Preços são atualizados em tempo real
-• Use CEP para ver disponibilidade local`;
+Dicas:
+- Inclua quantidade na busca (5kg, 1L, 500ml)
+- Precos sao atualizados em tempo real
+- Use CEP para ver disponibilidade local`;
 }
 
-/**
- * Formata status do sistema
- */
 export function formatStatus(health, sessionStats, rateLimitStats) {
-  const statusEmoji = health.status === 'healthy' ? '🟢' : '🔴';
-  
-  return `📊 *STATUS DO SISTEMA*
+  const statusText = health.status === 'healthy' ? 'OK' : 'ERRO';
 
-${statusEmoji} *API:* ${health.status}
-🔌 *Redis:* ${health.components?.redis || 'N/A'}
-🏪 *Mercados:* ${health.components?.mercados_enabled || 0} ativos
+  return `STATUS DO SISTEMA
 
-📱 *Sessões:* ${sessionStats?.totalSessions || 0}
-⏱️ *Rate Limit:* ${rateLimitStats?.activeUsers || 0} usuários
+API: ${statusText}
+Redis: ${health.components?.redis || 'N/A'}
+Mercados: ${health.components?.mercados_enabled || 0} ativos
 
-_Versão: ${health.version || 'N/A'}_`;
+Sessoes: ${sessionStats?.totalSessions || 0}
+Rate Limit: ${rateLimitStats?.activeUsers || 0} usuarios
+
+Versao: ${health.version || 'N/A'}`;
 }
 
-/**
- * Formata erro genérico
- */
 export function formatError(error, query = null) {
-  let message = '❌ *Ocorreu um erro*\n\n';
-  
+  let message = 'Ocorreu um erro\n\n';
+
   if (error.response?.status === 429) {
-    message = '⏳ *Limite de requisições atingido*\n\nAguarde um momento e tente novamente.';
+    message = 'Limite de requisicoes atingido\n\nAguarde um momento e tente novamente.';
   } else if (error.response?.status === 404) {
-    message = `❌ *Nenhum resultado encontrado*${query ? ` para _${query}_` : ''}\n\nTente outros termos.`;
+    message = 'Nenhum resultado encontrado' + (query ? ' para ' + query : '') + '\n\nTente outros termos.';
   } else if (error.code === 'ECONNREFUSED') {
-    message = '🔌 *Servidor indisponível*\n\nTente novamente em alguns minutos.';
+    message = 'Servidor indisponivel\n\nTente novamente em alguns minutos.';
   } else {
     message += error.message || 'Erro desconhecido';
   }
 
   return message;
-}
-
-/**
- * Escapa caracteres especiais do WhatsApp
- */
-export function escapeMarkdown(text) {
-  return text.replace(/([_*~`])/g, '\\$1');
-}
-
-/**
- * Trunca texto com ellipsis
- */
-export function truncate(text, maxLength = 50) {
-  if (text.length <= maxLength) return text;
-  return text.substring(0, maxLength - 3) + '...';
 }

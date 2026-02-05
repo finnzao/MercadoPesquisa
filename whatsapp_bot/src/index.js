@@ -1,313 +1,147 @@
-/**
- * Price Collector WhatsApp Bot
- * Integração com Baileys para WhatsApp Web
- */
-
-import makeWASocket, {
+import pkg from '@whiskeysockets/baileys';
+const {
+  default: makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
-  makeInMemoryStore,
-  fetchLatestBaileysVersion,
-} from '@whiskeysockets/baileys';
+  makeCacheableSignalKeyStore,
+} = pkg;
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
-import qrcode from 'qrcode-terminal';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import qrcode from 'qrcode-terminal';
 
 import { config, MESSAGES } from './config.js';
 import { commandHandler } from './handlers/commands.js';
-import { userSessionService } from './services/session.js';
-import { cleanPhoneNumber, isGroup } from './utils/parser.js';
+import { cleanPhoneNumber } from './utils/parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Logger
-const logger = pino({
-  level: config.logging.level,
-  transport: config.isDev
-    ? { target: 'pino-pretty', options: { colorize: true } }
-    : undefined,
-});
-
-// Store para armazenar dados em memória
-const store = makeInMemoryStore({ logger: logger.child({ module: 'store' }) });
-
-// Caminho para salvar autenticação
 const AUTH_PATH = path.join(__dirname, '..', 'auth');
 
-class WhatsAppBot {
-  constructor() {
-    this.socket = null;
-    this.isConnected = false;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
-  }
+const logger = pino({ level: 'silent' });
 
-  /**
-   * Inicia o bot
-   */
-  async start() {
-    console.log('🚀 Iniciando Price Collector WhatsApp Bot...');
-    console.log(`📡 API: ${config.api.baseUrl}`);
+async function startBot() {
+  console.log('Iniciando bot...');
 
-    try {
-      // Carrega estado de autenticação
-      const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+  console.log('Auth state carregado');
 
-      // Obtém versão mais recente do Baileys
-      const { version, isLatest } = await fetchLatestBaileysVersion();
-      console.log(`📦 Baileys v${version.join('.')} ${isLatest ? '(latest)' : ''}`);
+  const sock = makeWASocket({
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, logger),
+    },
+    logger: logger,
+    browser: ['Ubuntu', 'Chrome', '22.04.4'],
+    printQRInTerminal: true,
+    markOnlineOnConnect: false,
+  });
 
-      // Cria socket
-      this.socket = makeWASocket({
-        version,
-        auth: state,
-        logger: logger.child({ module: 'socket' }),
-        printQRInTerminal: false, // Vamos customizar
-        browser: ['Price Bot', 'Chrome', '120.0.0'],
-        syncFullHistory: false,
-        markOnlineOnConnect: true,
-        generateHighQualityLinkPreview: false,
-      });
+  console.log('Socket criado');
+  console.log('Aguardando QR Code...\n');
 
-      // Vincula store ao socket
-      store.bind(this.socket.ev);
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-      // Event handlers
-      this.setupEventHandlers(saveCreds);
-
-      console.log('✅ Bot inicializado. Aguardando conexão...');
-
-    } catch (error) {
-      console.error('❌ Erro ao iniciar bot:', error);
-      process.exit(1);
+    if (qr) {
+      console.log('==========================================');
+      console.log('   ESCANEIE O QR CODE COM SEU WHATSAPP');
+      console.log('==========================================\n');
+      qrcode.generate(qr, { small: true });
+      console.log('\nInstrucoes:');
+      console.log('1. Abra o WhatsApp no celular');
+      console.log('2. Toque em "..." ou Configuracoes');
+      console.log('3. Aparelhos conectados');
+      console.log('4. Conectar um aparelho');
+      console.log('5. Escaneie o QR Code acima\n');
     }
-  }
 
-  /**
-   * Configura handlers de eventos
-   */
-  setupEventHandlers(saveCreds) {
-    const sock = this.socket;
+    if (connection === 'connecting') {
+      console.log('Conectando ao WhatsApp...');
+    }
 
-    // Evento de atualização de conexão
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      // QR Code para escanear
-      if (qr) {
-        console.log('\n📱 Escaneie o QR Code abaixo com seu WhatsApp:\n');
-        qrcode.generate(qr, { small: true });
-        console.log('\n');
+    if (connection === 'open') {
+      console.log('\n==========================================');
+      console.log('        CONECTADO COM SUCESSO!');
+      console.log('==========================================');
+      const userId = sock.user?.id;
+      if (userId) {
+        console.log('Numero: ' + userId.split(':')[0].split('@')[0]);
       }
+      console.log('Bot pronto para receber mensagens!\n');
+    }
 
-      // Conexão estabelecida
-      if (connection === 'open') {
-        this.isConnected = true;
-        this.reconnectAttempts = 0;
-        console.log('✅ Conectado ao WhatsApp!');
-        console.log(`📱 Número: ${sock.user?.id?.split(':')[0] || 'N/A'}`);
-        console.log(`🤖 Bot: ${config.bot.name}`);
-        console.log(`⌨️  Prefixo: ${config.bot.prefix}`);
-        console.log('\n🎉 Bot pronto para receber mensagens!\n');
+    if (connection === 'close') {
+      const error = lastDisconnect?.error;
+      const statusCode = new Boom(error)?.output?.statusCode;
+
+      console.log('Conexao fechada. Codigo: ' + statusCode);
+
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.log('Sessao encerrada. Delete a pasta auth/ e reinicie.');
+        process.exit(1);
+      } else if (statusCode === DisconnectReason.restartRequired) {
+        console.log('Reinicio necessario. Reconectando...');
+        startBot();
+      } else if (statusCode === 405) {
+        console.log('\nErro 405 detectado.');
+        console.log('Tentando reconectar em 5 segundos...');
+        setTimeout(startBot, 5000);
+      } else {
+        console.log('Reconectando em 3 segundos...');
+        setTimeout(startBot, 3000);
       }
+    }
+  });
 
-      // Desconectado
-      if (connection === 'close') {
-        this.isConnected = false;
-        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+  sock.ev.on('creds.update', saveCreds);
 
-        console.log(`❌ Desconectado. Razão: ${DisconnectReason[reason] || reason}`);
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;
 
-        // Decide se reconecta
-        if (reason === DisconnectReason.loggedOut) {
-          console.log('🔐 Sessão encerrada. Delete a pasta /auth e escaneie novamente.');
-          process.exit(1);
-        } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          console.log(`🔄 Tentando reconectar (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-          setTimeout(() => this.start(), 5000);
-        } else {
-          console.log('💀 Máximo de tentativas de reconexão atingido.');
-          process.exit(1);
-        }
-      }
-    });
+    for (const msg of messages) {
+      // MODO TESTE: permite processar suas próprias mensagens
+      // Para produção, descomente a linha abaixo:
+      // if (msg.key.fromMe) continue;
 
-    // Salva credenciais quando atualizadas
-    sock.ev.on('creds.update', saveCreds);
-
-    // Mensagens recebidas
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // Ignora mensagens de histórico
-      if (type !== 'notify') return;
-
-      for (const msg of messages) {
-        await this.handleIncomingMessage(msg);
-      }
-    });
-  }
-
-  /**
-   * Processa mensagem recebida
-   */
-  async handleIncomingMessage(msg) {
-    try {
-      // Ignora mensagens enviadas por nós
-      if (msg.key.fromMe) return;
-
-      // Ignora mensagens de grupos (opcional)
-      if (isGroup(msg.key.remoteJid) && !config.bot.allowGroups) {
-        return;
-      }
-
-      // Extrai dados da mensagem
       const jid = msg.key.remoteJid;
       const messageContent = msg.message;
+      if (!messageContent) continue;
 
-      // Ignora se não tem conteúdo
-      if (!messageContent) return;
+      const text =
+        messageContent.conversation ||
+        messageContent.extendedTextMessage?.text ||
+        '';
 
-      // Verifica autorização
-      if (!commandHandler.isAuthorized(jid)) {
-        console.log(`🔒 Usuário não autorizado: ${cleanPhoneNumber(jid)}`);
-        return;
-      }
+      if (!text) continue;
 
-      // Log da mensagem recebida
-      const text = messageContent.conversation || 
-                   messageContent.extendedTextMessage?.text || '';
-      
-      if (text) {
-        console.log(`📩 [${cleanPhoneNumber(jid)}]: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
-      }
+      const sender = cleanPhoneNumber(jid);
+      console.log('[' + sender + ']: ' + text);
 
-      // Processa comando
-      const response = await commandHandler.handleMessage(messageContent, jid);
-
-      // Envia resposta se houver
-      if (response) {
-        await this.sendMessage(jid, response);
-      }
-
-    } catch (error) {
-      console.error('❌ Erro ao processar mensagem:', error);
-      
       try {
-        await this.sendMessage(
-          msg.key.remoteJid,
-          MESSAGES.ERROR
-        );
-      } catch (sendError) {
-        console.error('❌ Erro ao enviar mensagem de erro:', sendError);
+        const response = await commandHandler.handleMessage(messageContent, jid);
+        if (response) {
+          await sock.sendMessage(jid, { text: response });
+          console.log('Resposta enviada para ' + sender);
+        }
+      } catch (err) {
+        console.log('Erro ao processar mensagem: ' + err.message);
       }
     }
-  }
-
-  /**
-   * Envia mensagem
-   */
-  async sendMessage(jid, text) {
-    if (!this.socket || !this.isConnected) {
-      console.error('❌ Socket não conectado');
-      return;
-    }
-
-    try {
-      await this.socket.sendMessage(jid, { text });
-      console.log(`📤 [${cleanPhoneNumber(jid)}]: Resposta enviada`);
-    } catch (error) {
-      console.error('❌ Erro ao enviar mensagem:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Envia mensagem com reação (typing indicator)
-   */
-  async sendMessageWithTyping(jid, text, typingDuration = 1000) {
-    if (!this.socket || !this.isConnected) return;
-
-    try {
-      // Mostra "digitando..."
-      await this.socket.sendPresenceUpdate('composing', jid);
-      
-      // Aguarda
-      await new Promise(resolve => setTimeout(resolve, typingDuration));
-      
-      // Para de digitar
-      await this.socket.sendPresenceUpdate('paused', jid);
-      
-      // Envia mensagem
-      await this.sendMessage(jid, text);
-    } catch (error) {
-      // Fallback: envia sem typing
-      await this.sendMessage(jid, text);
-    }
-  }
-
-  /**
-   * Envia imagem com legenda
-   */
-  async sendImage(jid, imageUrl, caption = '') {
-    if (!this.socket || !this.isConnected) return;
-
-    try {
-      await this.socket.sendMessage(jid, {
-        image: { url: imageUrl },
-        caption,
-      });
-    } catch (error) {
-      console.error('❌ Erro ao enviar imagem:', error);
-    }
-  }
-
-  /**
-   * Envia botões (se suportado)
-   */
-  async sendButtons(jid, text, buttons) {
-    if (!this.socket || !this.isConnected) return;
-
-    try {
-      await this.socket.sendMessage(jid, {
-        text,
-        buttons: buttons.map((btn, idx) => ({
-          buttonId: `btn_${idx}`,
-          buttonText: { displayText: btn },
-          type: 1,
-        })),
-        headerType: 1,
-      });
-    } catch (error) {
-      // Fallback: envia texto normal
-      const buttonsText = buttons.map((b, i) => `${i + 1}. ${b}`).join('\n');
-      await this.sendMessage(jid, `${text}\n\n${buttonsText}`);
-    }
-  }
+  });
 }
 
-// Limpa sessões expiradas periodicamente
-setInterval(() => {
-  const cleaned = userSessionService.cleanExpiredSessions();
-  if (cleaned > 0) {
-    console.log(`🧹 ${cleaned} sessões expiradas removidas`);
-  }
-}, 60 * 60 * 1000); // A cada hora
-
-// Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\n👋 Encerrando bot...');
+  console.log('\nEncerrando bot...');
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  console.log('\n👋 Encerrando bot...');
-  process.exit(0);
+process.on('uncaughtException', (err) => {
+  console.log('Erro nao tratado: ' + err.message);
 });
 
-// Inicia o bot
-const bot = new WhatsAppBot();
-bot.start();
+process.on('unhandledRejection', (err) => {
+  console.log('Promise rejeitada: ' + err);
+});
 
-export default bot;
+startBot();

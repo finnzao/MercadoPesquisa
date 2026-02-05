@@ -1,7 +1,3 @@
-/**
- * Serviço de comunicação com a API do Price Collector
- */
-
 import axios from 'axios';
 import { config } from '../config.js';
 
@@ -12,167 +8,78 @@ class ApiService {
       timeout: config.api.timeout,
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': `${config.bot.name}/1.0`,
       },
     });
-
-    // Interceptor para logging
-    this.client.interceptors.response.use(
-      response => response,
-      error => {
-        console.error('[API Error]', error.message);
-        throw error;
-      }
-    );
   }
 
-  /**
-   * Busca rápida de produtos (otimizada para bots)
-   */
-  async searchFast(query, cep = null, userId = null) {
+  async searchFast(query, cep, userId) {
     try {
-      const params = { q: query };
-      if (cep) params.cep = cep;
-
-      const headers = {};
-      if (userId) headers['X-User-ID'] = userId;
-
-      const response = await this.client.get('/search/fast', { params, headers });
+      const response = await this.client.get('/search/fast', {
+        params: { q: query, cep, user_id: userId },
+      });
       return response.data;
     } catch (error) {
-      if (error.response?.status === 429) {
-        return { error: 'rate_limited', message: 'Muitas requisições. Aguarde.' };
+      if (error.response?.status === 404) {
+        return { found: false, query };
       }
       throw error;
     }
   }
 
-  /**
-   * Busca completa com mais resultados
-   */
-  async search(query, cep = null, markets = null, limit = 10, userId = null) {
+  async search(query, cep, markets, userId) {
     try {
-      const params = { q: query, limit };
-      if (cep) params.cep = cep;
-      if (markets) params.markets = markets.join(',');
-
-      const headers = {};
-      if (userId) headers['X-User-ID'] = userId;
-
-      const response = await this.client.get('/search', { params, headers });
+      const response = await this.client.get('/search', {
+        params: { q: query, cep, markets, user_id: userId },
+      });
       return response.data;
     } catch (error) {
-      if (error.response?.status === 429) {
-        return { error: 'rate_limited' };
+      if (error.response?.status === 404) {
+        return { status: 'error', total_results: 0, query };
       }
       throw error;
     }
   }
 
-  /**
-   * Comparação de preços entre mercados
-   */
-  async compare(query, cep = null, userId = null) {
+  async compare(query, cep, userId) {
     try {
-      const params = { q: query };
-      if (cep) params.cep = cep;
-
-      const headers = {};
-      if (userId) headers['X-User-ID'] = userId;
-
-      const response = await this.client.get('/search/compare', { params, headers });
+      const response = await this.client.get('/search/compare', {
+        params: { q: query, cep, user_id: userId },
+      });
       return response.data;
     } catch (error) {
+      if (error.response?.status === 404) {
+        return { best_offer: null, query };
+      }
       throw error;
     }
   }
 
-  /**
-   * Busca múltiplos itens (lista de compras)
-   */
-  async searchMulti(items, cep = null, singleMarket = false, userId = null) {
+  async searchMulti(items, cep, singleMarket, userId) {
     try {
-      const body = {
+      const response = await this.client.post('/search/multi', {
         items,
+        cep,
         single_market: singleMarket,
-      };
-      if (cep) body.cep = cep;
-
-      const headers = {};
-      if (userId) headers['X-User-ID'] = userId;
-
-      const response = await this.client.post('/search/multi', body, { headers });
+        user_id: userId,
+      });
       return response.data;
     } catch (error) {
       throw error;
     }
   }
 
-  /**
-   * Busca múltipla rápida (versão simplificada para bots)
-   */
-  async searchMultiQuick(items, cep = null, singleMarket = false, userId = null) {
-    try {
-      const body = {
-        items,
-        single_market: singleMarket,
-      };
-      if (cep) body.cep = cep;
-
-      const headers = {};
-      if (userId) headers['X-User-ID'] = userId;
-
-      const response = await this.client.post('/search/multi/quick', body, { headers });
-      return response.data;
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Lista mercados disponíveis
-   */
   async getMarkets() {
     try {
       const response = await this.client.get('/markets');
       return response.data;
     } catch (error) {
-      throw error;
+      return [];
     }
   }
 
-  /**
-   * Lista apenas mercados habilitados
-   */
-  async getEnabledMarkets() {
-    try {
-      const response = await this.client.get('/markets/enabled');
-      return response.data;
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Status dos mercados (circuit breakers)
-   */
-  async getMarketsStatus() {
-    try {
-      const response = await this.client.get('/markets/status');
-      return response.data;
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Health check da API
-   */
   async healthCheck() {
     try {
-      const response = await this.client.get('/health', {
-        baseURL: config.api.baseUrl.replace('/api/v1', ''),
-      });
+      const response = await this.client.get('/health');
       return response.data;
     } catch (error) {
       return { status: 'unhealthy', error: error.message };
@@ -180,6 +87,5 @@ class ApiService {
   }
 }
 
-// Singleton
 export const apiService = new ApiService();
 export default apiService;

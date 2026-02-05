@@ -1,161 +1,59 @@
-/**
- * Gerenciador de sessões de usuários
- * Armazena CEP, preferências e estado da conversa
- */
-
 class UserSessionService {
   constructor() {
-    // Map de sessões: número -> dados da sessão
     this.sessions = new Map();
-    
-    // Tempo de expiração da sessão (24 horas)
-    this.sessionTTL = 24 * 60 * 60 * 1000;
   }
 
-  /**
-   * Obtém ou cria sessão do usuário
-   */
   getSession(userId) {
-    const cleanId = this.cleanUserId(userId);
-    
-    if (!this.sessions.has(cleanId)) {
-      this.sessions.set(cleanId, this.createSession(cleanId));
+    if (!this.sessions.has(userId)) {
+      this.sessions.set(userId, {
+        cep: null,
+        searchHistory: [],
+        messageCount: 0,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      });
     }
 
-    const session = this.sessions.get(cleanId);
+    const session = this.sessions.get(userId);
     session.lastActivity = Date.now();
-    
     return session;
   }
 
-  /**
-   * Cria nova sessão
-   */
-  createSession(userId) {
-    return {
-      userId,
-      cep: null,
-      preferredMarkets: [],
-      lastSearch: null,
-      lastActivity: Date.now(),
-      searchHistory: [],
-      messageCount: 0,
-      createdAt: Date.now(),
-    };
-  }
-
-  /**
-   * Define CEP do usuário
-   */
   setCep(userId, cep) {
     const session = this.getSession(userId);
-    session.cep = this.cleanCep(cep);
-    return session.cep;
+    session.cep = cep;
   }
 
-  /**
-   * Obtém CEP do usuário
-   */
-  getCep(userId) {
-    const session = this.getSession(userId);
-    return session.cep;
-  }
-
-  /**
-   * Define mercados preferidos
-   */
-  setPreferredMarkets(userId, markets) {
-    const session = this.getSession(userId);
-    session.preferredMarkets = markets;
-  }
-
-  /**
-   * Adiciona busca ao histórico
-   */
   addSearchHistory(userId, query, result) {
     const session = this.getSession(userId);
-    
     session.searchHistory.unshift({
       query,
+      result,
       timestamp: Date.now(),
-      resultCount: result?.total_results || 0,
-      bestPrice: result?.best_offer?.price || null,
     });
-
-    // Mantém apenas últimas 20 buscas
-    if (session.searchHistory.length > 20) {
-      session.searchHistory = session.searchHistory.slice(0, 20);
+    if (session.searchHistory.length > 10) {
+      session.searchHistory.pop();
     }
-
-    session.lastSearch = query;
   }
 
-  /**
-   * Incrementa contador de mensagens
-   */
   incrementMessageCount(userId) {
     const session = this.getSession(userId);
     session.messageCount++;
-    return session.messageCount;
   }
 
-  /**
-   * Obtém estatísticas da sessão
-   */
-  getStats(userId) {
-    const session = this.getSession(userId);
-    return {
-      cep: session.cep,
-      searchCount: session.searchHistory.length,
-      messageCount: session.messageCount,
-      lastSearch: session.lastSearch,
-      sessionAge: Date.now() - session.createdAt,
-    };
-  }
-
-  /**
-   * Limpa sessões expiradas
-   */
-  cleanExpiredSessions() {
-    const now = Date.now();
-    let cleaned = 0;
-
-    for (const [userId, session] of this.sessions) {
-      if (now - session.lastActivity > this.sessionTTL) {
-        this.sessions.delete(userId);
-        cleaned++;
-      }
-    }
-
-    return cleaned;
-  }
-
-  /**
-   * Limpa ID do usuário (remove @s.whatsapp.net)
-   */
-  cleanUserId(userId) {
-    return userId.replace('@s.whatsapp.net', '').replace('@g.us', '');
-  }
-
-  /**
-   * Limpa e valida CEP
-   */
-  cleanCep(cep) {
-    const cleaned = cep.replace(/\D/g, '');
-    if (cleaned.length === 8) {
-      return cleaned;
-    }
-    return null;
-  }
-
-  /**
-   * Total de sessões ativas
-   */
   get totalSessions() {
     return this.sessions.size;
   }
+
+  cleanOldSessions(maxAge = 24 * 60 * 60 * 1000) {
+    const now = Date.now();
+    for (const [userId, session] of this.sessions) {
+      if (now - session.lastActivity > maxAge) {
+        this.sessions.delete(userId);
+      }
+    }
+  }
 }
 
-// Singleton
 export const userSessionService = new UserSessionService();
 export default userSessionService;
